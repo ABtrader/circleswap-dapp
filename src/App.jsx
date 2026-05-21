@@ -780,6 +780,8 @@ export default function App() {
               handleNetworkChange={handleNetworkChange}
               bridgeHistory={bridgeHistory}
               setBridgeHistory={setBridgeHistory}
+              activeWallet={activeWallet}
+              walletAddress={walletAddress}
             />
           )}
           {activeTab === "liquidity" && (
@@ -1914,6 +1916,8 @@ function Bridge({
   handleNetworkChange,
   bridgeHistory,
   setBridgeHistory,
+  activeWallet,
+  walletAddress,
 }) {
   const [fromChain, setFromChain] = useState(selectedNetwork);
   const [toChain, setToChain] = useState(NETWORKS.BASE_SEPOLIA.name);
@@ -1922,6 +1926,7 @@ function Bridge({
   const [bridgeStatus, setBridgeStatus] = useState("");
   const [bridgePreviewOpen, setBridgePreviewOpen] = useState(false);
   const [bridgeConfirmOpen, setBridgeConfirmOpen] = useState(false);
+  const [bridgeTxHash, setBridgeTxHash] = useState("");
 
   const estimate = calculateBridgeEstimate(
     fromChain,
@@ -1932,11 +1937,15 @@ function Bridge({
 
   const isSameChain = fromChain === toChain;
   const hasValidBridgeAmount = bridgeAmount && Number(bridgeAmount) > 0;
+  const fromNetworkInfo = getNetworkByName(fromChain);
+  const bridgeExplorerTxUrl =
+    fromNetworkInfo && bridgeTxHash ? `${fromNetworkInfo.explorer}/tx/${bridgeTxHash}` : "";
 
   const resetBridgePreview = () => {
     setBridgeStatus("");
     setBridgePreviewOpen(false);
     setBridgeConfirmOpen(false);
+    setBridgeTxHash("");
   };
 
   const handleFromChange = (network) => {
@@ -1970,40 +1979,70 @@ function Bridge({
     setBridgeStatus("Review the bridge details before confirming.");
   };
 
-  const confirmDemoBridge = () => {
+  const confirmDemoBridge = async () => {
     if (!bridgePreviewOpen) {
       setBridgeStatus("Preview the bridge route first.");
       return;
     }
 
-    const bridgeItem = {
-      fromChain,
-      toChain,
-      token: bridgeToken,
-      amount: bridgeAmount,
-      estimatedReceive: estimate.estimatedReceive,
-      bridgeFee: estimate.bridgeFee,
-      estimatedTime: estimate.estimatedTime,
-      routeType: estimate.routeType,
-      gasToken: getGasLabel(fromChain),
-      timestamp: new Date().toLocaleString(),
-      status: "Demo bridge confirmed",
-    };
+    if (!activeWallet || !walletAddress) {
+      setBridgeStatus("Connect your wallet first before confirming an on-chain demo bridge.");
+      return;
+    }
 
-    const updatedBridgeHistory = [bridgeItem, ...bridgeHistory];
+    try {
+      setBridgeStatus("Switching wallet to bridge source chain...");
+      await switchWalletNetwork(fromChain);
 
-    setBridgeHistory(updatedBridgeHistory);
+      setBridgeStatus("Opening wallet for demo bridge transaction...");
 
-    localStorage.setItem(
-      "circleswap_bridge_history",
-      JSON.stringify(updatedBridgeHistory)
-    );
+      const ethereumProvider = await activeWallet.getEthereumProvider();
+      const provider = new ethers.BrowserProvider(ethereumProvider);
+      const signer = await provider.getSigner();
 
-    setBridgeStatus(
-      `Demo bridge confirmed: ${bridgeAmount} ${bridgeToken} from ${fromChain} to ${toChain}.`
-    );
+      const tx = await signer.sendTransaction({
+        to: walletAddress,
+        value: ethers.parseEther("0"),
+      });
 
-    setBridgeConfirmOpen(false);
+      setBridgeTxHash(tx.hash);
+      setBridgeStatus("Demo bridge transaction submitted. Waiting for confirmation...");
+
+      await tx.wait();
+
+      const bridgeItem = {
+        fromChain,
+        toChain,
+        token: bridgeToken,
+        amount: bridgeAmount,
+        estimatedReceive: estimate.estimatedReceive,
+        bridgeFee: estimate.bridgeFee,
+        estimatedTime: estimate.estimatedTime,
+        routeType: estimate.routeType,
+        gasToken: getGasLabel(fromChain),
+        txHash: tx.hash,
+        timestamp: new Date().toLocaleString(),
+        status: "On-chain demo bridge confirmed",
+      };
+
+      const updatedBridgeHistory = [bridgeItem, ...bridgeHistory];
+
+      setBridgeHistory(updatedBridgeHistory);
+
+      localStorage.setItem(
+        "circleswap_bridge_history",
+        JSON.stringify(updatedBridgeHistory)
+      );
+
+      setBridgeStatus(
+        `On-chain demo bridge confirmed: ${bridgeAmount} ${bridgeToken} from ${fromChain} to ${toChain}.`
+      );
+
+      setBridgeConfirmOpen(false);
+    } catch (error) {
+      console.error("On-chain demo bridge failed:", error);
+      setBridgeStatus(error?.shortMessage || error?.message || "On-chain demo bridge failed.");
+    }
   };
 
   const clearBridgeHistory = () => {
@@ -2072,6 +2111,11 @@ function Bridge({
       </div>
 
       <div className="quote-box">
+        <span>Bridge Mode</span>
+        <strong>On-chain demo tx first • Real bridge router next</strong>
+      </div>
+
+      <div className="quote-box">
         <span>Estimated Receive</span>
         <strong>
           {estimate.estimatedReceive || "0.00"} {bridgeToken}
@@ -2120,6 +2164,19 @@ function Bridge({
         </div>
       )}
 
+      {bridgeTxHash && (
+        <div className="quote-box">
+          <span>Bridge Tx Hash</span>
+          <strong className="break-text">{bridgeTxHash}</strong>
+        </div>
+      )}
+
+      {bridgeExplorerTxUrl && (
+        <a className="secondary" href={bridgeExplorerTxUrl} target="_blank" rel="noreferrer">
+          View Bridge Tx on Explorer
+        </a>
+      )}
+
       <button className="primary" onClick={previewBridge}>
         Preview Bridge
       </button>
@@ -2132,18 +2189,17 @@ function Bridge({
         <div className="profile-preview">
           <div className="avatar">✓</div>
           <div>
-            <h3>Confirm Demo Bridge</h3>
+            <h3>Confirm On-chain Demo Bridge</h3>
             <p>
               {bridgeAmount} {bridgeToken}: {fromChain} → {toChain}
             </p>
             <small>
-              Receive: {estimate.estimatedReceive} {bridgeToken} • Fee:{" "}
-              {estimate.bridgeFee} {bridgeToken} • Time: {estimate.estimatedTime}
+              Wallet will open and submit a 0-value testnet transaction on {fromChain}.
             </small>
 
             <div style={{ marginTop: "12px", display: "flex", gap: "10px", flexWrap: "wrap" }}>
               <button className="primary" onClick={confirmDemoBridge}>
-                Confirm Demo Bridge
+                Confirm On-chain Demo Bridge
               </button>
 
               <button className="secondary" onClick={() => setBridgeConfirmOpen(false)}>
@@ -2157,7 +2213,7 @@ function Bridge({
       <div className="quote-box">
         <span>Bridge History</span>
         <strong>
-          {bridgeHistory.length} demo bridge{bridgeHistory.length === 1 ? "" : "s"}
+          {bridgeHistory.length} bridge tx{bridgeHistory.length === 1 ? "" : "s"}
         </strong>
       </div>
 
@@ -2199,6 +2255,13 @@ function Bridge({
             <span>Status</span>
             <strong>{item.status}</strong>
           </div>
+
+          {item.txHash && (
+            <div className="quote-box">
+              <span>Tx Hash</span>
+              <strong className="break-text">{item.txHash}</strong>
+            </div>
+          )}
 
           <div className="quote-box">
             <span>Time</span>
