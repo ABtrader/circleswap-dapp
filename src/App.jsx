@@ -790,6 +790,8 @@ export default function App() {
               handleNetworkChange={handleNetworkChange}
               liquidityHistory={liquidityHistory}
               setLiquidityHistory={setLiquidityHistory}
+              activeWallet={activeWallet}
+              walletAddress={walletAddress}
             />
           )}
           {activeTab === "perps" && (
@@ -797,6 +799,8 @@ export default function App() {
               selectedNetwork={selectedNetwork}
               perpsHistory={perpsHistory}
               setPerpsHistory={setPerpsHistory}
+              activeWallet={activeWallet}
+              walletAddress={walletAddress}
             />
           )}
           {activeTab === "wallet" && (
@@ -2278,6 +2282,8 @@ function Liquidity({
   handleNetworkChange,
   liquidityHistory,
   setLiquidityHistory,
+  activeWallet,
+  walletAddress,
 }) {
   const [selectedPool, setSelectedPool] = useState("USDC / EURC");
   const [usdcAmount, setUsdcAmount] = useState("");
@@ -2285,6 +2291,7 @@ function Liquidity({
   const [liquidityStatus, setLiquidityStatus] = useState("");
   const [liquidityPreviewOpen, setLiquidityPreviewOpen] = useState(false);
   const [liquidityConfirmOpen, setLiquidityConfirmOpen] = useState(false);
+  const [liquidityTxHash, setLiquidityTxHash] = useState("");
 
   const poolInfo = getLiquidityPoolInfo(selectedPool);
   const estimate = calculateLiquidityEstimate(selectedPool, usdcAmount, pairAmount);
@@ -2294,11 +2301,17 @@ function Liquidity({
     pairAmount &&
     Number(usdcAmount) > 0 &&
     Number(pairAmount) > 0;
+  const selectedNetworkInfo = getNetworkByName(selectedNetwork);
+  const liquidityExplorerTxUrl =
+    selectedNetworkInfo && liquidityTxHash
+      ? `${selectedNetworkInfo.explorer}/tx/${liquidityTxHash}`
+      : "";
 
   const resetLiquidityPreview = () => {
     setLiquidityStatus("");
     setLiquidityPreviewOpen(false);
     setLiquidityConfirmOpen(false);
+    setLiquidityTxHash("");
   };
 
   const previewLiquidity = () => {
@@ -2321,41 +2334,71 @@ function Liquidity({
     setLiquidityStatus("Review the liquidity details before confirming.");
   };
 
-  const confirmDemoLiquidity = () => {
+  const confirmDemoLiquidity = async () => {
     if (!liquidityPreviewOpen) {
       setLiquidityStatus("Preview the liquidity deposit first.");
       return;
     }
 
-    const liquidityItem = {
-      pool: selectedPool,
-      usdcAmount,
-      pairToken,
-      pairAmount,
-      totalDepositUsd: estimate.totalDepositUsd,
-      lpTokens: estimate.lpTokens,
-      poolShare: estimate.poolShare,
-      estimatedApy: estimate.estimatedApy,
-      network: selectedNetwork,
-      gasToken: getGasLabel(selectedNetwork),
-      timestamp: new Date().toLocaleString(),
-      status: "Demo liquidity added",
-    };
+    if (!activeWallet || !walletAddress) {
+      setLiquidityStatus("Connect your wallet first before confirming on-chain demo liquidity.");
+      return;
+    }
 
-    const updatedLiquidityHistory = [liquidityItem, ...liquidityHistory];
+    try {
+      setLiquidityStatus("Switching network for on-chain demo liquidity...");
+      await switchWalletNetwork(selectedNetwork);
 
-    setLiquidityHistory(updatedLiquidityHistory);
+      setLiquidityStatus("Opening wallet for demo liquidity transaction...");
 
-    localStorage.setItem(
-      "circleswap_liquidity_history",
-      JSON.stringify(updatedLiquidityHistory)
-    );
+      const ethereumProvider = await activeWallet.getEthereumProvider();
+      const provider = new ethers.BrowserProvider(ethereumProvider);
+      const signer = await provider.getSigner();
 
-    setLiquidityStatus(
-      `Demo liquidity added: ${usdcAmount} USDC + ${pairAmount} ${pairToken} into ${selectedPool}.`
-    );
+      const tx = await signer.sendTransaction({
+        to: walletAddress,
+        value: ethers.parseEther("0"),
+      });
 
-    setLiquidityConfirmOpen(false);
+      setLiquidityTxHash(tx.hash);
+      setLiquidityStatus("Demo liquidity transaction submitted. Waiting for confirmation...");
+
+      await tx.wait();
+
+      const liquidityItem = {
+        pool: selectedPool,
+        usdcAmount,
+        pairToken,
+        pairAmount,
+        totalDepositUsd: estimate.totalDepositUsd,
+        lpTokens: estimate.lpTokens,
+        poolShare: estimate.poolShare,
+        estimatedApy: estimate.estimatedApy,
+        network: selectedNetwork,
+        gasToken: getGasLabel(selectedNetwork),
+        txHash: tx.hash,
+        timestamp: new Date().toLocaleString(),
+        status: "On-chain demo liquidity confirmed",
+      };
+
+      const updatedLiquidityHistory = [liquidityItem, ...liquidityHistory];
+
+      setLiquidityHistory(updatedLiquidityHistory);
+
+      localStorage.setItem(
+        "circleswap_liquidity_history",
+        JSON.stringify(updatedLiquidityHistory)
+      );
+
+      setLiquidityStatus(
+        `On-chain demo liquidity confirmed: ${usdcAmount} USDC + ${pairAmount} ${pairToken} into ${selectedPool}.`
+      );
+
+      setLiquidityConfirmOpen(false);
+    } catch (error) {
+      console.error("On-chain demo liquidity failed:", error);
+      setLiquidityStatus(error?.shortMessage || error?.message || "On-chain demo liquidity failed.");
+    }
   };
 
   const clearLiquidityHistory = () => {
@@ -2480,6 +2523,19 @@ function Liquidity({
         </div>
       )}
 
+      {liquidityTxHash && (
+        <div className="quote-box">
+          <span>Liquidity Tx Hash</span>
+          <strong className="break-text">{liquidityTxHash}</strong>
+        </div>
+      )}
+
+      {liquidityExplorerTxUrl && (
+        <a className="secondary" href={liquidityExplorerTxUrl} target="_blank" rel="noreferrer">
+          View Liquidity Tx on Explorer
+        </a>
+      )}
+
       <button className="primary" onClick={previewLiquidity}>
         Preview Add Liquidity
       </button>
@@ -2492,7 +2548,7 @@ function Liquidity({
         <div className="profile-preview">
           <div className="avatar">✓</div>
           <div>
-            <h3>Confirm Demo Liquidity</h3>
+            <h3>Confirm On-chain Demo Liquidity</h3>
             <p>
               {usdcAmount} USDC + {pairAmount} {pairToken}
             </p>
@@ -2503,7 +2559,7 @@ function Liquidity({
 
             <div style={{ marginTop: "12px", display: "flex", gap: "10px", flexWrap: "wrap" }}>
               <button className="primary" onClick={confirmDemoLiquidity}>
-                Confirm Demo Liquidity
+                Confirm On-chain Demo Liquidity
               </button>
 
               <button className="secondary" onClick={() => setLiquidityConfirmOpen(false)}>
@@ -2566,6 +2622,13 @@ function Liquidity({
             <strong>{item.status}</strong>
           </div>
 
+          {item.txHash && (
+            <div className="quote-box">
+              <span>Tx Hash</span>
+              <strong className="break-text">{item.txHash}</strong>
+            </div>
+          )}
+
           <div className="quote-box">
             <span>Time</span>
             <strong>{item.timestamp}</strong>
@@ -2576,7 +2639,7 @@ function Liquidity({
   );
 }
 
-function Perps({ selectedNetwork, perpsHistory, setPerpsHistory }) {
+function Perps({ selectedNetwork, perpsHistory, setPerpsHistory, activeWallet, walletAddress }) {
   const [selectedPair, setSelectedPair] = useState("BTC/USDC");
   const [side, setSide] = useState("Long");
   const [collateral, setCollateral] = useState("");
@@ -2585,6 +2648,7 @@ function Perps({ selectedNetwork, perpsHistory, setPerpsHistory }) {
   const [perpsStatus, setPerpsStatus] = useState("");
   const [perpsPreviewOpen, setPerpsPreviewOpen] = useState(false);
   const [perpsConfirmOpen, setPerpsConfirmOpen] = useState(false);
+  const [perpsTxHash, setPerpsTxHash] = useState("");
   const [livePerpPrices, setLivePerpPrices] = useState({});
   const [priceStatus, setPriceStatus] = useState("Loading live market prices...");
   const [lastPriceUpdate, setLastPriceUpdate] = useState("");
@@ -2599,6 +2663,11 @@ function Perps({ selectedNetwork, perpsHistory, setPerpsHistory }) {
   );
 
   const hasValidCollateral = collateral && Number(collateral) > 0;
+  const selectedNetworkInfo = getNetworkByName(selectedNetwork);
+  const perpsExplorerTxUrl =
+    selectedNetworkInfo && perpsTxHash
+      ? `${selectedNetworkInfo.explorer}/tx/${perpsTxHash}`
+      : "";
 
   const loadLivePrices = async () => {
     try {
@@ -2627,6 +2696,7 @@ function Perps({ selectedNetwork, perpsHistory, setPerpsHistory }) {
     setPerpsStatus("");
     setPerpsPreviewOpen(false);
     setPerpsConfirmOpen(false);
+    setPerpsTxHash("");
   };
 
   const selectMarket = (pair, selectedSide) => {
@@ -2655,45 +2725,75 @@ function Perps({ selectedNetwork, perpsHistory, setPerpsHistory }) {
     setPerpsStatus("Review the position details before confirming.");
   };
 
-  const confirmDemoPosition = () => {
+  const confirmDemoPosition = async () => {
     if (!perpsPreviewOpen) {
       setPerpsStatus("Preview the perps position first.");
       return;
     }
 
-    const positionItem = {
-      pair: selectedPair,
-      side,
-      collateral,
-      leverage,
-      entryMovePercent,
-      entryPrice: estimate.marketPrice,
-      positionSize: estimate.positionSize,
-      marginRequired: estimate.marginRequired,
-      liquidationPrice: estimate.liquidationPrice,
-      estimatedPnl: estimate.estimatedPnl,
-      estimatedRoi: estimate.estimatedRoi,
-      fundingRate: estimate.fundingRate,
-      network: selectedNetwork,
-      gasToken: getGasLabel(selectedNetwork),
-      timestamp: new Date().toLocaleString(),
-      status: "Demo position opened",
-    };
+    if (!activeWallet || !walletAddress) {
+      setPerpsStatus("Connect your wallet first before confirming an on-chain demo perps position.");
+      return;
+    }
 
-    const updatedPerpsHistory = [positionItem, ...perpsHistory];
+    try {
+      setPerpsStatus("Switching network for on-chain demo perps position...");
+      await switchWalletNetwork(selectedNetwork);
 
-    setPerpsHistory(updatedPerpsHistory);
+      setPerpsStatus("Opening wallet for demo perps transaction...");
 
-    localStorage.setItem(
-      "circleswap_perps_history",
-      JSON.stringify(updatedPerpsHistory)
-    );
+      const ethereumProvider = await activeWallet.getEthereumProvider();
+      const provider = new ethers.BrowserProvider(ethereumProvider);
+      const signer = await provider.getSigner();
 
-    setPerpsStatus(
-      `Demo ${side.toLowerCase()} position opened: ${selectedPair} at ${leverage}x leverage.`
-    );
+      const tx = await signer.sendTransaction({
+        to: walletAddress,
+        value: ethers.parseEther("0"),
+      });
 
-    setPerpsConfirmOpen(false);
+      setPerpsTxHash(tx.hash);
+      setPerpsStatus("Demo perps transaction submitted. Waiting for confirmation...");
+
+      await tx.wait();
+
+      const positionItem = {
+        pair: selectedPair,
+        side,
+        collateral,
+        leverage,
+        entryMovePercent,
+        entryPrice: estimate.marketPrice,
+        positionSize: estimate.positionSize,
+        marginRequired: estimate.marginRequired,
+        liquidationPrice: estimate.liquidationPrice,
+        estimatedPnl: estimate.estimatedPnl,
+        estimatedRoi: estimate.estimatedRoi,
+        fundingRate: estimate.fundingRate,
+        network: selectedNetwork,
+        gasToken: getGasLabel(selectedNetwork),
+        txHash: tx.hash,
+        timestamp: new Date().toLocaleString(),
+        status: "On-chain demo position confirmed",
+      };
+
+      const updatedPerpsHistory = [positionItem, ...perpsHistory];
+
+      setPerpsHistory(updatedPerpsHistory);
+
+      localStorage.setItem(
+        "circleswap_perps_history",
+        JSON.stringify(updatedPerpsHistory)
+      );
+
+      setPerpsStatus(
+        `On-chain demo ${side.toLowerCase()} position confirmed: ${selectedPair} at ${leverage}x leverage.`
+      );
+
+      setPerpsConfirmOpen(false);
+    } catch (error) {
+      console.error("On-chain demo perps failed:", error);
+      setPerpsStatus(error?.shortMessage || error?.message || "On-chain demo perps failed.");
+    }
   };
 
   const clearPerpsHistory = () => {
@@ -2885,6 +2985,19 @@ function Perps({ selectedNetwork, perpsHistory, setPerpsHistory }) {
           </div>
         )}
 
+        {perpsTxHash && (
+          <div className="quote-box">
+            <span>Perps Tx Hash</span>
+            <strong className="break-text">{perpsTxHash}</strong>
+          </div>
+        )}
+
+        {perpsExplorerTxUrl && (
+          <a className="secondary" href={perpsExplorerTxUrl} target="_blank" rel="noreferrer">
+            View Perps Tx on Explorer
+          </a>
+        )}
+
         <button className="primary" onClick={previewPosition}>
           Preview Position
         </button>
@@ -2897,7 +3010,7 @@ function Perps({ selectedNetwork, perpsHistory, setPerpsHistory }) {
           <div className="profile-preview">
             <div className="avatar">✓</div>
             <div>
-              <h3>Confirm Demo Position</h3>
+              <h3>Confirm On-chain Demo Position</h3>
               <p>
                 {side} {selectedPair} • ${collateral} margin • {leverage}x leverage
               </p>
@@ -2908,7 +3021,7 @@ function Perps({ selectedNetwork, perpsHistory, setPerpsHistory }) {
 
               <div style={{ marginTop: "12px", display: "flex", gap: "10px", flexWrap: "wrap" }}>
                 <button className="primary" onClick={confirmDemoPosition}>
-                  Confirm Demo Position
+                  Confirm On-chain Demo Position
                 </button>
 
                 <button className="secondary" onClick={() => setPerpsConfirmOpen(false)}>
@@ -2970,6 +3083,13 @@ function Perps({ selectedNetwork, perpsHistory, setPerpsHistory }) {
               <span>Status</span>
               <strong>{item.status}</strong>
             </div>
+
+            {item.txHash && (
+              <div className="quote-box">
+                <span>Tx Hash</span>
+                <strong className="break-text">{item.txHash}</strong>
+              </div>
+            )}
 
             <div className="quote-box">
               <span>Time</span>
