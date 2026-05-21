@@ -406,6 +406,7 @@ export default function App() {
   const [bridgeHistory, setBridgeHistory] = useState([]);
   const [liquidityHistory, setLiquidityHistory] = useState([]);
   const [perpsHistory, setPerpsHistory] = useState([]);
+  const [openPerpsPositions, setOpenPerpsPositions] = useState([]);
 
   const { ready, authenticated, user } = usePrivy();
   const { wallets } = useWallets();
@@ -553,6 +554,19 @@ export default function App() {
       } catch (error) {
         console.error("Load perps history failed:", error);
         setPerpsHistory([]);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    const savedOpenPerpsPositions = localStorage.getItem("circleswap_open_perps_positions");
+
+    if (savedOpenPerpsPositions) {
+      try {
+        setOpenPerpsPositions(JSON.parse(savedOpenPerpsPositions));
+      } catch (error) {
+        console.error("Load open perps positions failed:", error);
+        setOpenPerpsPositions([]);
       }
     }
   }, []);
@@ -755,6 +769,7 @@ export default function App() {
         bridgeHistory={bridgeHistory}
         liquidityHistory={liquidityHistory}
         perpsHistory={perpsHistory}
+        openPerpsPositions={openPerpsPositions}
         registeredUsers={registeredUsers}
         selectedNetwork={selectedNetwork}
         setActiveTab={setActiveTab}
@@ -799,6 +814,8 @@ export default function App() {
               selectedNetwork={selectedNetwork}
               perpsHistory={perpsHistory}
               setPerpsHistory={setPerpsHistory}
+              openPerpsPositions={openPerpsPositions}
+              setOpenPerpsPositions={setOpenPerpsPositions}
               activeWallet={activeWallet}
               walletAddress={walletAddress}
             />
@@ -883,6 +900,7 @@ function ActivitySummary({
   bridgeHistory,
   liquidityHistory,
   perpsHistory,
+  openPerpsPositions,
   registeredUsers,
   selectedNetwork,
   setActiveTab,
@@ -891,7 +909,7 @@ function ActivitySummary({
   const totalSwaps = swapHistory.length;
   const totalBridges = bridgeHistory.length;
   const totalLiquidity = liquidityHistory.length;
-  const totalPerps = perpsHistory.length;
+  const totalPerps = perpsHistory.length + openPerpsPositions.length;
   const totalActivities =
     totalTransactions + totalSwaps + totalBridges + totalLiquidity + totalPerps;
 
@@ -931,11 +949,17 @@ function ActivitySummary({
       detail: `$${item.totalDepositUsd}`,
       time: item.timestamp,
     })),
+    ...openPerpsPositions.map((item) => ({
+      type: "Open Perps",
+      title: `${item.side} ${item.pair} ${item.leverage}x`,
+      detail: `Live position • $${item.positionSize}`,
+      time: item.openedAt,
+    })),
     ...perpsHistory.map((item) => ({
-      type: "Perps",
+      type: "Perps History",
       title: `${item.side} ${item.pair} ${item.leverage}x`,
       detail: `$${item.positionSize}`,
-      time: item.timestamp,
+      time: item.closedAt || item.timestamp,
     })),
   ].slice(0, 6);
 
@@ -2639,7 +2663,15 @@ function Liquidity({
   );
 }
 
-function Perps({ selectedNetwork, perpsHistory, setPerpsHistory, activeWallet, walletAddress }) {
+function Perps({
+  selectedNetwork,
+  perpsHistory,
+  setPerpsHistory,
+  openPerpsPositions,
+  setOpenPerpsPositions,
+  activeWallet,
+  walletAddress,
+}) {
   const [selectedPair, setSelectedPair] = useState("BTC/USDC");
   const [side, setSide] = useState("Long");
   const [collateral, setCollateral] = useState("");
@@ -2652,6 +2684,7 @@ function Perps({ selectedNetwork, perpsHistory, setPerpsHistory, activeWallet, w
   const [livePerpPrices, setLivePerpPrices] = useState({});
   const [priceStatus, setPriceStatus] = useState("Loading live market prices...");
   const [lastPriceUpdate, setLastPriceUpdate] = useState("");
+  const [closingPositionId, setClosingPositionId] = useState("");
 
   const estimate = calculatePerpsEstimate(
     selectedPair,
@@ -2711,7 +2744,7 @@ function Perps({ selectedNetwork, perpsHistory, setPerpsHistory, activeWallet, w
       return;
     }
 
-    setPerpsStatus("Perps position simulated successfully.");
+    setPerpsStatus("Perps position preview ready.");
     setPerpsPreviewOpen(true);
   };
 
@@ -2725,6 +2758,35 @@ function Perps({ selectedNetwork, perpsHistory, setPerpsHistory, activeWallet, w
     setPerpsStatus("Review the position details before confirming.");
   };
 
+  const getPositionLiveStats = (position) => {
+    const currentMarket = getPerpMarketInfo(position.pair, livePerpPrices);
+    const currentPrice = Number(currentMarket.price);
+    const entryPrice = Number(position.entryPrice);
+    const positionSize = Number(position.positionSize);
+    const collateralAmount = Number(position.collateral);
+
+    if (!entryPrice || !currentPrice || !positionSize || !collateralAmount) {
+      return {
+        currentPrice: currentPrice || entryPrice || 0,
+        priceChangePercent: "0.00",
+        livePnl: "0.00",
+        liveRoi: "0.00",
+      };
+    }
+
+    const rawMove = ((currentPrice - entryPrice) / entryPrice) * 100;
+    const direction = position.side === "Long" ? 1 : -1;
+    const livePnl = positionSize * ((rawMove * direction) / 100);
+    const liveRoi = (livePnl / collateralAmount) * 100;
+
+    return {
+      currentPrice,
+      priceChangePercent: (rawMove * direction).toFixed(2),
+      livePnl: livePnl.toFixed(2),
+      liveRoi: liveRoi.toFixed(2),
+    };
+  };
+
   const confirmDemoPosition = async () => {
     if (!perpsPreviewOpen) {
       setPerpsStatus("Preview the perps position first.");
@@ -2732,7 +2794,7 @@ function Perps({ selectedNetwork, perpsHistory, setPerpsHistory, activeWallet, w
     }
 
     if (!activeWallet || !walletAddress) {
-      setPerpsStatus("Connect your wallet first before confirming an on-chain demo perps position.");
+      setPerpsStatus("Connect your wallet first before opening an on-chain demo perps position.");
       return;
     }
 
@@ -2740,7 +2802,7 @@ function Perps({ selectedNetwork, perpsHistory, setPerpsHistory, activeWallet, w
       setPerpsStatus("Switching network for on-chain demo perps position...");
       await switchWalletNetwork(selectedNetwork);
 
-      setPerpsStatus("Opening wallet for demo perps transaction...");
+      setPerpsStatus("Opening wallet to create demo perps position...");
 
       const ethereumProvider = await activeWallet.getEthereumProvider();
       const provider = new ethers.BrowserProvider(ethereumProvider);
@@ -2752,11 +2814,12 @@ function Perps({ selectedNetwork, perpsHistory, setPerpsHistory, activeWallet, w
       });
 
       setPerpsTxHash(tx.hash);
-      setPerpsStatus("Demo perps transaction submitted. Waiting for confirmation...");
+      setPerpsStatus("Open-position transaction submitted. Waiting for confirmation...");
 
       await tx.wait();
 
-      const positionItem = {
+      const openPosition = {
+        id: `${Date.now()}-${tx.hash}`,
         pair: selectedPair,
         side,
         collateral,
@@ -2766,39 +2829,105 @@ function Perps({ selectedNetwork, perpsHistory, setPerpsHistory, activeWallet, w
         positionSize: estimate.positionSize,
         marginRequired: estimate.marginRequired,
         liquidationPrice: estimate.liquidationPrice,
-        estimatedPnl: estimate.estimatedPnl,
-        estimatedRoi: estimate.estimatedRoi,
         fundingRate: estimate.fundingRate,
         network: selectedNetwork,
         gasToken: getGasLabel(selectedNetwork),
-        txHash: tx.hash,
-        timestamp: new Date().toLocaleString(),
-        status: "On-chain demo position confirmed",
+        openTxHash: tx.hash,
+        openedAt: new Date().toLocaleString(),
+        status: "Open",
       };
 
-      const updatedPerpsHistory = [positionItem, ...perpsHistory];
+      const updatedOpenPositions = [openPosition, ...openPerpsPositions];
 
-      setPerpsHistory(updatedPerpsHistory);
-
+      setOpenPerpsPositions(updatedOpenPositions);
       localStorage.setItem(
-        "circleswap_perps_history",
-        JSON.stringify(updatedPerpsHistory)
+        "circleswap_open_perps_positions",
+        JSON.stringify(updatedOpenPositions)
       );
 
       setPerpsStatus(
-        `On-chain demo ${side.toLowerCase()} position confirmed: ${selectedPair} at ${leverage}x leverage.`
+        `Open ${side.toLowerCase()} position created: ${selectedPair} at ${leverage}x leverage.`
       );
 
       setPerpsConfirmOpen(false);
     } catch (error) {
-      console.error("On-chain demo perps failed:", error);
-      setPerpsStatus(error?.shortMessage || error?.message || "On-chain demo perps failed.");
+      console.error("Open perps position failed:", error);
+      setPerpsStatus(error?.shortMessage || error?.message || "Open perps position failed.");
+    }
+  };
+
+  const closeOpenPosition = async (position) => {
+    if (!activeWallet || !walletAddress) {
+      setPerpsStatus("Connect your wallet first before closing this position.");
+      return;
+    }
+
+    try {
+      setClosingPositionId(position.id);
+      setPerpsStatus(`Opening wallet to close ${position.side} ${position.pair} position...`);
+      await switchWalletNetwork(position.network || selectedNetwork);
+
+      const ethereumProvider = await activeWallet.getEthereumProvider();
+      const provider = new ethers.BrowserProvider(ethereumProvider);
+      const signer = await provider.getSigner();
+
+      const tx = await signer.sendTransaction({
+        to: walletAddress,
+        value: ethers.parseEther("0"),
+      });
+
+      setPerpsTxHash(tx.hash);
+      setPerpsStatus("Close-position transaction submitted. Waiting for confirmation...");
+
+      await tx.wait();
+
+      const liveStats = getPositionLiveStats(position);
+      const closedPosition = {
+        ...position,
+        closeTxHash: tx.hash,
+        exitPrice: liveStats.currentPrice,
+        finalPnl: liveStats.livePnl,
+        finalRoi: liveStats.liveRoi,
+        closedAt: new Date().toLocaleString(),
+        status: "Closed",
+      };
+
+      const updatedOpenPositions = openPerpsPositions.filter(
+        (item) => item.id !== position.id
+      );
+      const updatedHistory = [closedPosition, ...perpsHistory];
+
+      setOpenPerpsPositions(updatedOpenPositions);
+      setPerpsHistory(updatedHistory);
+
+      localStorage.setItem(
+        "circleswap_open_perps_positions",
+        JSON.stringify(updatedOpenPositions)
+      );
+      localStorage.setItem(
+        "circleswap_perps_history",
+        JSON.stringify(updatedHistory)
+      );
+
+      setPerpsStatus(
+        `Position closed: ${position.side} ${position.pair}. Final PnL: $${liveStats.livePnl}.`
+      );
+    } catch (error) {
+      console.error("Close perps position failed:", error);
+      setPerpsStatus(error?.shortMessage || error?.message || "Close perps position failed.");
+    } finally {
+      setClosingPositionId("");
     }
   };
 
   const clearPerpsHistory = () => {
     setPerpsHistory([]);
     localStorage.removeItem("circleswap_perps_history");
+  };
+
+  const clearOpenPositions = () => {
+    setOpenPerpsPositions([]);
+    localStorage.removeItem("circleswap_open_perps_positions");
   };
 
   return (
@@ -2824,7 +2953,7 @@ function Perps({ selectedNetwork, perpsHistory, setPerpsHistory, activeWallet, w
 
       <Card title="Open Perps Position">
         <p className="soft swap-note">
-          Simulate a USDC-margined perpetual position with live BTC, ETH and SOL market prices.
+          Open a demo perps position on-chain, monitor live PnL, then close it when you want.
         </p>
 
         <div className="quote-box">
@@ -2971,7 +3100,7 @@ function Perps({ selectedNetwork, perpsHistory, setPerpsHistory, activeWallet, w
                 {side} {selectedPair} with ${collateral} collateral at {leverage}x
               </p>
               <small>
-                Size: ${estimate.positionSize} • Liq: ${estimate.liquidationPrice} • PnL: $
+                Size: ${estimate.positionSize} • Liq: ${estimate.liquidationPrice} • Preview PnL: $
                 {estimate.estimatedPnl}
               </small>
             </div>
@@ -2987,14 +3116,14 @@ function Perps({ selectedNetwork, perpsHistory, setPerpsHistory, activeWallet, w
 
         {perpsTxHash && (
           <div className="quote-box">
-            <span>Perps Tx Hash</span>
+            <span>Latest Perps Tx Hash</span>
             <strong className="break-text">{perpsTxHash}</strong>
           </div>
         )}
 
         {perpsExplorerTxUrl && (
           <a className="secondary" href={perpsExplorerTxUrl} target="_blank" rel="noreferrer">
-            View Perps Tx on Explorer
+            View Latest Perps Tx on Explorer
           </a>
         )}
 
@@ -3010,18 +3139,18 @@ function Perps({ selectedNetwork, perpsHistory, setPerpsHistory, activeWallet, w
           <div className="profile-preview">
             <div className="avatar">✓</div>
             <div>
-              <h3>Confirm On-chain Demo Position</h3>
+              <h3>Confirm Open Position</h3>
               <p>
                 {side} {selectedPair} • ${collateral} margin • {leverage}x leverage
               </p>
               <small>
-                Size: ${estimate.positionSize} • Liquidation: ${estimate.liquidationPrice} • Gas:{" "}
+                Size: ${estimate.positionSize} • Liquidation: ${estimate.liquidationPrice} • Gas: {" "}
                 {getGasLabel(selectedNetwork)}
               </small>
 
               <div style={{ marginTop: "12px", display: "flex", gap: "10px", flexWrap: "wrap" }}>
                 <button className="primary" onClick={confirmDemoPosition}>
-                  Confirm On-chain Demo Position
+                  Confirm Open Position
                 </button>
 
                 <button className="secondary" onClick={() => setPerpsConfirmOpen(false)}>
@@ -3033,24 +3162,100 @@ function Perps({ selectedNetwork, perpsHistory, setPerpsHistory, activeWallet, w
         )}
 
         <div className="quote-box">
-          <span>Open Positions History</span>
+          <span>Open Positions</span>
+          <strong>{openPerpsPositions.length} active position{openPerpsPositions.length === 1 ? "" : "s"}</strong>
+        </div>
+
+        {openPerpsPositions.length > 0 && (
+          <button className="secondary" onClick={clearOpenPositions}>
+            Clear Open Positions Locally
+          </button>
+        )}
+
+        {openPerpsPositions.map((position) => {
+          const liveStats = getPositionLiveStats(position);
+
+          return (
+            <div className="history-card" key={position.id}>
+              <div className="quote-box">
+                <span>Open Position</span>
+                <strong>
+                  {position.side} {position.pair} • {position.leverage}x
+                </strong>
+              </div>
+
+              <div className="quote-box">
+                <span>Entry Price</span>
+                <strong>${formatUsd(position.entryPrice)}</strong>
+              </div>
+
+              <div className="quote-box">
+                <span>Current Price</span>
+                <strong>${formatUsd(liveStats.currentPrice)}</strong>
+              </div>
+
+              <div className="quote-box">
+                <span>Live PnL</span>
+                <strong>${liveStats.livePnl} ({liveStats.liveRoi}%)</strong>
+              </div>
+
+              <div className="quote-box">
+                <span>Position Size</span>
+                <strong>${position.positionSize}</strong>
+              </div>
+
+              <div className="quote-box">
+                <span>Liquidation Price</span>
+                <strong>${position.liquidationPrice}</strong>
+              </div>
+
+              <div className="quote-box">
+                <span>Open Tx Hash</span>
+                <strong className="break-text">{position.openTxHash}</strong>
+              </div>
+
+              <div className="quote-box">
+                <span>Opened</span>
+                <strong>{position.openedAt}</strong>
+              </div>
+
+              <button
+                className="primary"
+                onClick={() => closeOpenPosition(position)}
+                disabled={closingPositionId === position.id}
+              >
+                {closingPositionId === position.id ? "Closing Position..." : "Close Position"}
+              </button>
+            </div>
+          );
+        })}
+
+        <div className="quote-box">
+          <span>Trade History</span>
           <strong>
-            {perpsHistory.length} demo position{perpsHistory.length === 1 ? "" : "s"}
+            {perpsHistory.length} closed trade{perpsHistory.length === 1 ? "" : "s"}
           </strong>
         </div>
 
         {perpsHistory.length > 0 && (
           <button className="secondary" onClick={clearPerpsHistory}>
-            Clear Perps History
+            Clear Trade History
           </button>
         )}
 
         {perpsHistory.map((item, index) => (
           <div className="history-card" key={index}>
             <div className="quote-box">
-              <span>Position</span>
+              <span>Closed Position</span>
               <strong>
                 {item.side} {item.pair} • {item.leverage}x
+              </strong>
+            </div>
+
+            <div className="quote-box">
+              <span>Entry / Exit</span>
+              <strong>
+                ${formatUsd(item.entryPrice)} → ${formatUsd(item.exitPrice || item.entryPrice)}
               </strong>
             </div>
 
@@ -3065,18 +3270,8 @@ function Perps({ selectedNetwork, perpsHistory, setPerpsHistory, activeWallet, w
             </div>
 
             <div className="quote-box">
-              <span>Entry Price</span>
-              <strong>${formatUsd(item.entryPrice)}</strong>
-            </div>
-
-            <div className="quote-box">
-              <span>Liquidation Price</span>
-              <strong>${item.liquidationPrice}</strong>
-            </div>
-
-            <div className="quote-box">
-              <span>Estimated PnL</span>
-              <strong>${item.estimatedPnl}</strong>
+              <span>Final PnL</span>
+              <strong>${item.finalPnl || item.estimatedPnl || "0.00"}</strong>
             </div>
 
             <div className="quote-box">
@@ -3084,16 +3279,28 @@ function Perps({ selectedNetwork, perpsHistory, setPerpsHistory, activeWallet, w
               <strong>{item.status}</strong>
             </div>
 
-            {item.txHash && (
+            {item.openTxHash && (
               <div className="quote-box">
-                <span>Tx Hash</span>
-                <strong className="break-text">{item.txHash}</strong>
+                <span>Open Tx Hash</span>
+                <strong className="break-text">{item.openTxHash}</strong>
+              </div>
+            )}
+
+            {item.closeTxHash && (
+              <div className="quote-box">
+                <span>Close Tx Hash</span>
+                <strong className="break-text">{item.closeTxHash}</strong>
               </div>
             )}
 
             <div className="quote-box">
-              <span>Time</span>
-              <strong>{item.timestamp}</strong>
+              <span>Opened</span>
+              <strong>{item.openedAt || item.timestamp}</strong>
+            </div>
+
+            <div className="quote-box">
+              <span>Closed</span>
+              <strong>{item.closedAt || "Not closed"}</strong>
             </div>
           </div>
         ))}
