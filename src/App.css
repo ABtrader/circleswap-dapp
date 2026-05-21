@@ -1196,3 +1196,74 @@ select {
     grid-template-columns: 1fr;
   }
 }
+
+
+/* TradingView-style Perps Chart Upgrade */
+.perps-chart-panel {
+  min-height: 650px;
+}
+
+.perps-chart-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+  background: #07111f;
+  border: 1px solid #183453;
+  border-radius: 18px;
+  padding: 10px;
+}
+
+.perps-chart-toolbar button {
+  background: #0d1b2f;
+  border: 1px solid #203a5c;
+  color: #91a8c0;
+  padding: 8px 12px;
+  border-radius: 10px;
+  min-width: 44px;
+}
+
+.perps-chart-toolbar button.active,
+.perps-chart-toolbar button:hover {
+  background: #2775ca;
+  color: white;
+  border-color: #59b7ff;
+}
+
+.perps-chart-toolbar strong {
+  margin-left: auto;
+  color: #91a8c0;
+  font-size: 12px;
+}
+
+.tradingview-chart-shell {
+  height: 540px;
+  width: 100%;
+  background: #07111f;
+  border: 1px solid #183453;
+  border-radius: 24px;
+  overflow: hidden;
+}
+
+.tradingview-chart-container {
+  width: 100%;
+  height: 100%;
+}
+
+.tradingview-chart-container iframe {
+  width: 100% !important;
+  height: 100% !important;
+  border: none !important;
+}
+
+@media (max-width: 1100px) {
+  .tradingview-chart-shell {
+    height: 440px;
+  }
+
+  .perps-chart-toolbar strong {
+    width: 100%;
+    margin-left: 0;
+  }
+}

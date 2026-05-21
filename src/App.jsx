@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   usePrivy,
   useWallets,
@@ -246,6 +246,25 @@ const DEFAULT_PERP_MARKETS = {
     priceId: "solana",
   },
 };
+
+const TRADINGVIEW_SYMBOLS = {
+  "BTC/USDC": "BINANCE:BTCUSDT",
+  "ETH/USDC": "BINANCE:ETHUSDT",
+  "SOL/USDC": "BINANCE:SOLUSDT",
+};
+
+const TRADINGVIEW_INTERVALS = {
+  "1m": "1",
+  "5m": "5",
+  "15m": "15",
+  "1h": "60",
+  "4h": "240",
+  "1d": "D",
+};
+
+function getTradingViewSymbol(pair) {
+  return TRADINGVIEW_SYMBOLS[pair] || "BINANCE:BTCUSDT";
+}
 
 function formatUsd(value) {
   const numericValue = Number(value || 0);
@@ -2663,6 +2682,82 @@ function Liquidity({
   );
 }
 
+
+function TradingViewChart({ pair, interval }) {
+  const containerRef = useRef(null);
+  const containerIdRef = useRef(
+    `tradingview_${Math.random().toString(36).slice(2, 12)}`
+  );
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const renderWidget = () => {
+      if (!isMounted || !containerRef.current || !window.TradingView) {
+        return;
+      }
+
+      containerRef.current.innerHTML = "";
+
+      const widgetContainer = document.createElement("div");
+      widgetContainer.id = containerIdRef.current;
+      widgetContainer.style.height = "100%";
+      widgetContainer.style.width = "100%";
+      containerRef.current.appendChild(widgetContainer);
+
+      new window.TradingView.widget({
+        autosize: true,
+        symbol: getTradingViewSymbol(pair),
+        interval: TRADINGVIEW_INTERVALS[interval] || "15",
+        timezone: "Etc/UTC",
+        theme: "dark",
+        style: "1",
+        locale: "en",
+        toolbar_bg: "#07111f",
+        enable_publishing: false,
+        hide_top_toolbar: false,
+        hide_side_toolbar: false,
+        allow_symbol_change: false,
+        withdateranges: true,
+        save_image: false,
+        studies: ["Volume@tv-basicstudies"],
+        container_id: containerIdRef.current,
+      });
+    };
+
+    if (window.TradingView) {
+      renderWidget();
+    } else {
+      const existingScript = document.querySelector(
+        'script[src="https://s3.tradingview.com/tv.js"]'
+      );
+
+      if (existingScript) {
+        existingScript.addEventListener("load", renderWidget);
+      } else {
+        const script = document.createElement("script");
+        script.src = "https://s3.tradingview.com/tv.js";
+        script.async = true;
+        script.onload = renderWidget;
+        document.body.appendChild(script);
+      }
+    }
+
+    return () => {
+      isMounted = false;
+      if (containerRef.current) {
+        containerRef.current.innerHTML = "";
+      }
+    };
+  }, [pair, interval]);
+
+  return (
+    <div className="tradingview-chart-shell">
+      <div ref={containerRef} className="tradingview-chart-container" />
+    </div>
+  );
+}
+
 function Perps({
   selectedNetwork,
   perpsHistory,
@@ -2673,6 +2768,7 @@ function Perps({
   walletAddress,
 }) {
   const [selectedPair, setSelectedPair] = useState("BTC/USDC");
+  const [chartInterval, setChartInterval] = useState("15m");
   const [side, setSide] = useState("Long");
   const [collateral, setCollateral] = useState("");
   const [leverage, setLeverage] = useState("2");
@@ -3014,36 +3110,23 @@ function Perps({
             </div>
             <strong>{lastPriceUpdate ? `Updated ${lastPriceUpdate}` : "Loading..."}</strong>
           </div>
+          <div className="perps-chart-toolbar">
+            {["1m", "5m", "15m", "1h", "4h", "1d"].map((interval) => (
+              <button
+                key={interval}
+                className={chartInterval === interval ? "active" : ""}
+                onClick={() => setChartInterval(interval)}
+              >
+                {interval}
+              </button>
+            ))}
 
-          <div className="perps-chart">
-            {chartCandles.map((candle, index) => {
-              const top = Math.max(8, 40 - ((candle.high - chartSeed) / chartSeed) * 700);
-              const height = Math.max(22, Math.abs(candle.close - candle.open) / chartSeed * 1600);
-              const wickHeight = Math.max(42, Math.abs(candle.high - candle.low) / chartSeed * 1200);
-
-              return (
-                <div className="candle-wrap" key={index}>
-                  <span
-                    className={candle.up ? "candle-wick up" : "candle-wick down"}
-                    style={{ height: `${wickHeight}px`, marginTop: `${top}px` }}
-                  />
-                  <span
-                    className={candle.up ? "candle-body up" : "candle-body down"}
-                    style={{ height: `${height}px` }}
-                  />
-                </div>
-              );
-            })}
+            <strong>
+              TradingView-style live chart • {getTradingViewSymbol(selectedPair)}
+            </strong>
           </div>
 
-          <div className="perps-chart-footer">
-            <span>1m</span>
-            <span>5m</span>
-            <span>15m</span>
-            <span>1h</span>
-            <span>4h</span>
-            <strong>Demo chart powered by live price anchor</strong>
-          </div>
+          <TradingViewChart pair={selectedPair} interval={chartInterval} />
         </section>
 
         <aside className="perps-orderbook">
