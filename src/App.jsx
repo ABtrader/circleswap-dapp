@@ -20,9 +20,6 @@ import "./App.css";
 
 const tabs = ["swap", "bridge", "liquidity", "perps", "wallet"];
 const CIRCLE_FAUCET_URL = "https://faucet.circle.com/";
-const COINGECKO_PRICE_URL =
-  import.meta.env.VITE_COINGECKO_PRICE_URL ||
-  "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,solana&vs_currencies=usd";
 
 const ERC20_ABI = [
   "function balanceOf(address owner) view returns (uint256)",
@@ -277,32 +274,21 @@ function getPerpMarketInfo(pair, livePrices = {}) {
 }
 
 async function fetchLivePerpPrices() {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 8000);
+  const response = await fetch(
+    "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,solana&vs_currencies=usd"
+  );
 
-  try {
-    const response = await fetch(COINGECKO_PRICE_URL, {
-      signal: controller.signal,
-    });
-
-    if (!response.ok) {
-      throw new Error("Live price request failed.");
-    }
-
-    const data = await response.json();
-
-    const prices = {
-      "BTC/USDC": Number(data?.bitcoin?.usd),
-      "ETH/USDC": Number(data?.ethereum?.usd),
-      "SOL/USDC": Number(data?.solana?.usd),
-    };
-
-    return Object.fromEntries(
-      Object.entries(prices).filter(([, value]) => Number.isFinite(value) && value > 0)
-    );
-  } finally {
-    clearTimeout(timeout);
+  if (!response.ok) {
+    throw new Error("Live price request failed.");
   }
+
+  const data = await response.json();
+
+  return {
+    "BTC/USDC": data?.bitcoin?.usd,
+    "ETH/USDC": data?.ethereum?.usd,
+    "SOL/USDC": data?.solana?.usd,
+  };
 }
 
 function calculatePerpsEstimate(pair, side, collateral, leverage, entryMovePercent, livePrices = {}) {
@@ -784,6 +770,8 @@ export default function App() {
               usdcBalance={usdcBalance}
               swapHistory={swapHistory}
               setSwapHistory={setSwapHistory}
+              activeWallet={activeWallet}
+              walletAddress={walletAddress}
             />
           )}
           {activeTab === "bridge" && (
@@ -1559,7 +1547,16 @@ function NetworkSelector({ value, onChange }) {
   );
 }
 
-function Swap({ selectedNetwork, handleNetworkChange, ethBalance, usdcBalance, swapHistory, setSwapHistory }) {
+function Swap({
+  selectedNetwork,
+  handleNetworkChange,
+  ethBalance,
+  usdcBalance,
+  swapHistory,
+  setSwapHistory,
+  activeWallet,
+  walletAddress,
+}) {
   const [fromToken, setFromToken] = useState("USDC");
   const [toToken, setToToken] = useState("EURC");
   const [fromAmount, setFromAmount] = useState("");
@@ -1616,41 +1613,70 @@ function Swap({ selectedNetwork, handleNetworkChange, ethBalance, usdcBalance, s
     setSwapStatus("Review the swap details before confirming.");
   };
 
-  const confirmDemoSwap = () => {
+  const confirmDemoSwap = async () => {
     if (!swapPreviewOpen) {
       setSwapStatus("Preview the swap route first.");
       return;
     }
 
-    const swapItem = {
-      fromToken,
-      toToken,
-      fromAmount,
-      estimatedReceive: estimate.estimatedReceive,
-      minimumReceive: estimate.minimumReceive,
-      slippage,
-      network: selectedNetwork,
-      gasToken: getGasLabel(selectedNetwork),
-      routeFee: estimate.routeFee,
-      priceImpact: estimate.priceImpact,
-      timestamp: new Date().toLocaleString(),
-      status: "Demo swap confirmed",
-    };
+    if (!activeWallet || !walletAddress) {
+      setSwapStatus("Connect your wallet first before confirming an on-chain demo swap.");
+      return;
+    }
 
-    const updatedSwapHistory = [swapItem, ...swapHistory];
+    try {
+      setSwapStatus("Switching network for on-chain demo swap...");
+      await switchWalletNetwork(selectedNetwork);
 
-    setSwapHistory(updatedSwapHistory);
+      setSwapStatus("Opening wallet for demo swap transaction...");
 
-    localStorage.setItem(
-      "circleswap_swap_history",
-      JSON.stringify(updatedSwapHistory)
-    );
+      const ethereumProvider = await activeWallet.getEthereumProvider();
+      const provider = new ethers.BrowserProvider(ethereumProvider);
+      const signer = await provider.getSigner();
 
-    setSwapStatus(
-      `Demo swap confirmed: ${fromAmount} ${fromToken} → ${estimate.estimatedReceive} ${toToken}.`
-    );
+      const tx = await signer.sendTransaction({
+        to: walletAddress,
+        value: ethers.parseEther("0"),
+      });
 
-    setSwapConfirmOpen(false);
+      setSwapStatus("Demo swap transaction submitted. Waiting for confirmation...");
+
+      await tx.wait();
+
+      const swapItem = {
+        fromToken,
+        toToken,
+        fromAmount,
+        estimatedReceive: estimate.estimatedReceive,
+        minimumReceive: estimate.minimumReceive,
+        slippage,
+        network: selectedNetwork,
+        gasToken: getGasLabel(selectedNetwork),
+        routeFee: estimate.routeFee,
+        priceImpact: estimate.priceImpact,
+        txHash: tx.hash,
+        timestamp: new Date().toLocaleString(),
+        status: "On-chain demo swap confirmed",
+      };
+
+      const updatedSwapHistory = [swapItem, ...swapHistory];
+
+      setSwapHistory(updatedSwapHistory);
+
+      localStorage.setItem(
+        "circleswap_swap_history",
+        JSON.stringify(updatedSwapHistory)
+      );
+
+      setSwapStatus(
+        `On-chain demo swap confirmed: ${fromAmount} ${fromToken} → ${estimate.estimatedReceive} ${toToken}.`
+      );
+
+      setSwapConfirmOpen(false);
+    } catch (error) {
+      console.error("On-chain demo swap failed:", error);
+      setSwapStatus(error?.shortMessage || error?.message || "On-chain demo swap failed.");
+    }
   };
 
   const clearSwapHistory = () => {
@@ -1803,7 +1829,7 @@ function Swap({ selectedNetwork, handleNetworkChange, ethBalance, usdcBalance, s
         <div className="profile-preview">
           <div className="avatar">✓</div>
           <div>
-            <h3>Confirm Demo Swap</h3>
+            <h3>Confirm On-chain Demo Swap</h3>
             <p>
               {fromAmount} {fromToken} → {estimate.estimatedReceive} {toToken}
             </p>
@@ -1813,7 +1839,7 @@ function Swap({ selectedNetwork, handleNetworkChange, ethBalance, usdcBalance, s
 
             <div style={{ marginTop: "12px", display: "flex", gap: "10px", flexWrap: "wrap" }}>
               <button className="primary" onClick={confirmDemoSwap}>
-                Confirm Demo Swap
+                Confirm On-chain Demo Swap
               </button>
 
               <button className="secondary" onClick={() => setSwapConfirmOpen(false)}>
@@ -1865,6 +1891,13 @@ function Swap({ selectedNetwork, handleNetworkChange, ethBalance, usdcBalance, s
             <span>Status</span>
             <strong>{item.status}</strong>
           </div>
+
+          {item.txHash && (
+            <div className="quote-box">
+              <span>Tx Hash</span>
+              <strong className="break-text">{item.txHash}</strong>
+            </div>
+          )}
 
           <div className="quote-box">
             <span>Time</span>
