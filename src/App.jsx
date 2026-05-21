@@ -2677,6 +2677,7 @@ function Perps({
   const [collateral, setCollateral] = useState("");
   const [leverage, setLeverage] = useState("2");
   const [entryMovePercent, setEntryMovePercent] = useState("1");
+  const [orderType, setOrderType] = useState("Market");
   const [perpsStatus, setPerpsStatus] = useState("");
   const [perpsPreviewOpen, setPerpsPreviewOpen] = useState(false);
   const [perpsConfirmOpen, setPerpsConfirmOpen] = useState(false);
@@ -2695,12 +2696,48 @@ function Perps({
     livePerpPrices
   );
 
+  const selectedMarket = getPerpMarketInfo(selectedPair, livePerpPrices);
   const hasValidCollateral = collateral && Number(collateral) > 0;
   const selectedNetworkInfo = getNetworkByName(selectedNetwork);
   const perpsExplorerTxUrl =
     selectedNetworkInfo && perpsTxHash
       ? `${selectedNetworkInfo.explorer}/tx/${perpsTxHash}`
       : "";
+
+  const chartSeed = Number(selectedMarket.price || 1000);
+  const chartCandles = Array.from({ length: 32 }, (_, index) => {
+    const wave = Math.sin(index * 0.72) * 0.018;
+    const drift = (index - 16) * 0.0015;
+    const close = chartSeed * (1 + wave + drift);
+    const open = chartSeed * (1 + Math.sin((index - 1) * 0.72) * 0.018 + (index - 17) * 0.0015);
+    const high = Math.max(open, close) * (1 + 0.006 + (index % 3) * 0.002);
+    const low = Math.min(open, close) * (1 - 0.006 - (index % 4) * 0.0015);
+    const up = close >= open;
+
+    return { open, close, high, low, up };
+  });
+
+  const orderBookRows = Array.from({ length: 7 }, (_, index) => {
+    const spread = chartSeed * (0.0008 + index * 0.0009);
+    const size = (1.2 + index * 0.74).toFixed(3);
+
+    return {
+      ask: chartSeed + spread,
+      bid: chartSeed - spread,
+      size,
+    };
+  });
+
+  const recentTrades = Array.from({ length: 8 }, (_, index) => {
+    const direction = index % 2 === 0 ? "Long" : "Short";
+    const priceShift = chartSeed * ((index - 4) * 0.0007);
+
+    return {
+      side: direction,
+      price: chartSeed + priceShift,
+      size: (0.18 + index * 0.11).toFixed(3),
+    };
+  });
 
   const loadLivePrices = async () => {
     try {
@@ -2824,6 +2861,7 @@ function Perps({
         side,
         collateral,
         leverage,
+        orderType,
         entryMovePercent,
         entryPrice: estimate.marketPrice,
         positionSize: estimate.positionSize,
@@ -2931,383 +2969,412 @@ function Perps({
   };
 
   return (
-    <div>
-      <div className="markets">
+    <div className="perps-terminal">
+      <div className="perps-topbar">
+        <div>
+          <span className="pill">Perps Terminal • On-chain Demo</span>
+          <h2>{selectedPair}</h2>
+          <p>
+            ${formatUsd(selectedMarket.price)} • {selectedMarket.isLive ? "Live market price" : "Fallback price"} • Funding {selectedMarket.funding}%
+          </p>
+        </div>
+
+        <div className="perps-top-actions">
+          <button className="secondary" onClick={loadLivePrices}>
+            Refresh Prices
+          </button>
+        </div>
+      </div>
+
+      <div className="perps-market-strip">
         {["BTC/USDC", "ETH/USDC", "SOL/USDC"].map((pair) => {
           const marketInfo = getPerpMarketInfo(pair, livePerpPrices);
+          const isActive = selectedPair === pair;
 
           return (
-            <div className="market" key={pair}>
-              <h3>{pair}</h3>
-              <p>${formatUsd(marketInfo.price)} • {marketInfo.isLive ? "Live" : "Fallback"} • Funding {marketInfo.funding}%</p>
-              <div>
-                <button onClick={() => selectMarket(pair, "Long")}>Long</button>
-                <button className="short" onClick={() => selectMarket(pair, "Short")}>
-                  Short
-                </button>
-              </div>
-            </div>
+            <button
+              className={isActive ? "perps-market-card active" : "perps-market-card"}
+              key={pair}
+              onClick={() => selectMarket(pair, side)}
+            >
+              <span>{pair}</span>
+              <strong>${formatUsd(marketInfo.price)}</strong>
+              <small>{marketInfo.isLive ? "Live" : "Fallback"} • Funding {marketInfo.funding}%</small>
+            </button>
           );
         })}
       </div>
 
-      <Card title="Open Perps Position">
-        <p className="soft swap-note">
-          Open a demo perps position on-chain, monitor live PnL, then close it when you want.
-        </p>
-
-        <div className="quote-box">
-          <span>Price Source</span>
-          <strong>{priceStatus}</strong>
-        </div>
-
-        {lastPriceUpdate && (
-          <div className="quote-box">
-            <span>Last Price Update</span>
-            <strong>{lastPriceUpdate}</strong>
-          </div>
-        )}
-
-        <button className="secondary" onClick={loadLivePrices}>
-          Refresh Live Prices
-        </button>
-
-        <div className="quote-box">
-          <span>Network</span>
-          <strong>{selectedNetwork}</strong>
-        </div>
-
-        <div className="quote-box">
-          <span>Network Gas</span>
-          <strong>{getGasLabel(selectedNetwork)}</strong>
-        </div>
-
-        <label>Market</label>
-        <select
-          value={selectedPair}
-          onChange={(e) => {
-            setSelectedPair(e.target.value);
-            resetPerpsPreview();
-          }}
-        >
-          <option>BTC/USDC</option>
-          <option>ETH/USDC</option>
-          <option>SOL/USDC</option>
-        </select>
-
-        <label>Side</label>
-        <select
-          value={side}
-          onChange={(e) => {
-            setSide(e.target.value);
-            resetPerpsPreview();
-          }}
-        >
-          <option>Long</option>
-          <option>Short</option>
-        </select>
-
-        <label>Collateral</label>
-        <select>
-          <option>USDC</option>
-        </select>
-
-        <label>Collateral Amount</label>
-        <input
-          placeholder="Amount in USDC"
-          value={collateral}
-          onChange={(e) => {
-            setCollateral(e.target.value);
-            resetPerpsPreview();
-          }}
-        />
-
-        <label>Leverage</label>
-        <select
-          value={leverage}
-          onChange={(e) => {
-            setLeverage(e.target.value);
-            resetPerpsPreview();
-          }}
-        >
-          <option value="2">2x</option>
-          <option value="5">5x</option>
-          <option value="10">10x</option>
-        </select>
-
-        <label>Price Move Preview</label>
-        <select
-          value={entryMovePercent}
-          onChange={(e) => {
-            setEntryMovePercent(e.target.value);
-            resetPerpsPreview();
-          }}
-        >
-          <option value="1">1%</option>
-          <option value="2">2%</option>
-          <option value="5">5%</option>
-          <option value="-1">-1%</option>
-          <option value="-2">-2%</option>
-          <option value="-5">-5%</option>
-        </select>
-
-        <div className="quote-box">
-          <span>Market Price</span>
-          <strong>${formatUsd(estimate.marketPrice)}</strong>
-        </div>
-
-        <div className="quote-box">
-          <span>Position Size</span>
-          <strong>${estimate.positionSize}</strong>
-        </div>
-
-        <div className="quote-box">
-          <span>Margin Required</span>
-          <strong>${estimate.marginRequired}</strong>
-        </div>
-
-        <div className="quote-box">
-          <span>Estimated Liquidation Price</span>
-          <strong>${estimate.liquidationPrice}</strong>
-        </div>
-
-        <div className="quote-box">
-          <span>Estimated PnL</span>
-          <strong>${estimate.estimatedPnl}</strong>
-        </div>
-
-        <div className="quote-box">
-          <span>Estimated ROI</span>
-          <strong>{estimate.estimatedRoi}%</strong>
-        </div>
-
-        <div className="quote-box">
-          <span>Funding Rate</span>
-          <strong>{estimate.fundingRate}%</strong>
-        </div>
-
-        <div className="quote-box">
-          <span>Volatility</span>
-          <strong>{estimate.volatility}</strong>
-        </div>
-
-        {perpsPreviewOpen && (
-          <div className="profile-preview">
-            <div className="avatar">P</div>
+      <div className="perps-grid">
+        <section className="perps-chart-panel">
+          <div className="perps-panel-head">
             <div>
-              <h3>Perps Preview Ready</h3>
-              <p>
-                {side} {selectedPair} with ${collateral} collateral at {leverage}x
-              </p>
-              <small>
-                Size: ${estimate.positionSize} • Liq: ${estimate.liquidationPrice} • Preview PnL: $
-                {estimate.estimatedPnl}
-              </small>
+              <h3>{selectedPair} Chart</h3>
+              <p>{priceStatus}</p>
             </div>
+            <strong>{lastPriceUpdate ? `Updated ${lastPriceUpdate}` : "Loading..."}</strong>
           </div>
-        )}
 
-        {perpsStatus && (
-          <div className="quote-box">
-            <span>Perps Status</span>
-            <strong>{perpsStatus}</strong>
+          <div className="perps-chart">
+            {chartCandles.map((candle, index) => {
+              const top = Math.max(8, 40 - ((candle.high - chartSeed) / chartSeed) * 700);
+              const height = Math.max(22, Math.abs(candle.close - candle.open) / chartSeed * 1600);
+              const wickHeight = Math.max(42, Math.abs(candle.high - candle.low) / chartSeed * 1200);
+
+              return (
+                <div className="candle-wrap" key={index}>
+                  <span
+                    className={candle.up ? "candle-wick up" : "candle-wick down"}
+                    style={{ height: `${wickHeight}px`, marginTop: `${top}px` }}
+                  />
+                  <span
+                    className={candle.up ? "candle-body up" : "candle-body down"}
+                    style={{ height: `${height}px` }}
+                  />
+                </div>
+              );
+            })}
           </div>
-        )}
 
-        {perpsTxHash && (
-          <div className="quote-box">
-            <span>Latest Perps Tx Hash</span>
-            <strong className="break-text">{perpsTxHash}</strong>
+          <div className="perps-chart-footer">
+            <span>1m</span>
+            <span>5m</span>
+            <span>15m</span>
+            <span>1h</span>
+            <span>4h</span>
+            <strong>Demo chart powered by live price anchor</strong>
           </div>
-        )}
+        </section>
 
-        {perpsExplorerTxUrl && (
-          <a className="secondary" href={perpsExplorerTxUrl} target="_blank" rel="noreferrer">
-            View Latest Perps Tx on Explorer
-          </a>
-        )}
+        <aside className="perps-orderbook">
+          <h3>Order Book</h3>
 
-        <button className="primary" onClick={previewPosition}>
-          Preview Position
-        </button>
-
-        <button className="secondary" onClick={openPerpsConfirmation}>
-          Open Position Confirmation
-        </button>
-
-        {perpsConfirmOpen && (
-          <div className="profile-preview">
-            <div className="avatar">✓</div>
-            <div>
-              <h3>Confirm Open Position</h3>
-              <p>
-                {side} {selectedPair} • ${collateral} margin • {leverage}x leverage
-              </p>
-              <small>
-                Size: ${estimate.positionSize} • Liquidation: ${estimate.liquidationPrice} • Gas: {" "}
-                {getGasLabel(selectedNetwork)}
-              </small>
-
-              <div style={{ marginTop: "12px", display: "flex", gap: "10px", flexWrap: "wrap" }}>
-                <button className="primary" onClick={confirmDemoPosition}>
-                  Confirm Open Position
-                </button>
-
-                <button className="secondary" onClick={() => setPerpsConfirmOpen(false)}>
-                  Cancel
-                </button>
+          <div className="book-table asks">
+            {orderBookRows.slice().reverse().map((row, index) => (
+              <div key={`ask-${index}`}>
+                <span>${formatUsd(row.ask)}</span>
+                <strong>{row.size}</strong>
               </div>
-            </div>
+            ))}
           </div>
-        )}
 
-        <div className="quote-box">
-          <span>Open Positions</span>
-          <strong>{openPerpsPositions.length} active position{openPerpsPositions.length === 1 ? "" : "s"}</strong>
-        </div>
+          <div className="book-mid">${formatUsd(selectedMarket.price)}</div>
 
-        {openPerpsPositions.length > 0 && (
-          <button className="secondary" onClick={clearOpenPositions}>
-            Clear Open Positions Locally
+          <div className="book-table bids">
+            {orderBookRows.map((row, index) => (
+              <div key={`bid-${index}`}>
+                <span>${formatUsd(row.bid)}</span>
+                <strong>{row.size}</strong>
+              </div>
+            ))}
+          </div>
+
+          <h3>Recent Trades</h3>
+          <div className="recent-trades">
+            {recentTrades.map((trade, index) => (
+              <div key={index}>
+                <span className={trade.side === "Long" ? "green-text" : "red-text"}>
+                  {trade.side}
+                </span>
+                <strong>${formatUsd(trade.price)}</strong>
+                <small>{trade.size}</small>
+              </div>
+            ))}
+          </div>
+        </aside>
+
+        <aside className="perps-trade-ticket">
+          <h3>Trade Ticket</h3>
+
+          <div className="side-toggle">
+            <button
+              className={side === "Long" ? "active-long" : ""}
+              onClick={() => {
+                setSide("Long");
+                resetPerpsPreview();
+              }}
+            >
+              Long
+            </button>
+            <button
+              className={side === "Short" ? "active-short" : ""}
+              onClick={() => {
+                setSide("Short");
+                resetPerpsPreview();
+              }}
+            >
+              Short
+            </button>
+          </div>
+
+          <label>Market</label>
+          <select
+            value={selectedPair}
+            onChange={(e) => {
+              setSelectedPair(e.target.value);
+              resetPerpsPreview();
+            }}
+          >
+            <option>BTC/USDC</option>
+            <option>ETH/USDC</option>
+            <option>SOL/USDC</option>
+          </select>
+
+          <label>Order Type</label>
+          <select value={orderType} onChange={(e) => setOrderType(e.target.value)}>
+            <option>Market</option>
+            <option>Limit Demo</option>
+          </select>
+
+          <label>Collateral Amount</label>
+          <input
+            placeholder="Amount in USDC"
+            value={collateral}
+            onChange={(e) => {
+              setCollateral(e.target.value);
+              resetPerpsPreview();
+            }}
+          />
+
+          <label>Leverage</label>
+          <select
+            value={leverage}
+            onChange={(e) => {
+              setLeverage(e.target.value);
+              resetPerpsPreview();
+            }}
+          >
+            <option value="2">2x</option>
+            <option value="5">5x</option>
+            <option value="10">10x</option>
+          </select>
+
+          <label>Demo Price Move</label>
+          <select
+            value={entryMovePercent}
+            onChange={(e) => {
+              setEntryMovePercent(e.target.value);
+              resetPerpsPreview();
+            }}
+          >
+            <option value="1">+1%</option>
+            <option value="3">+3%</option>
+            <option value="-1">-1%</option>
+            <option value="-3">-3%</option>
+          </select>
+
+          <div className="quote-box">
+            <span>Position Size</span>
+            <strong>${estimate.positionSize}</strong>
+          </div>
+
+          <div className="quote-box">
+            <span>Entry Price</span>
+            <strong>${formatUsd(estimate.marketPrice)}</strong>
+          </div>
+
+          <div className="quote-box">
+            <span>Liquidation Price</span>
+            <strong>${formatUsd(estimate.liquidationPrice)}</strong>
+          </div>
+
+          <div className="quote-box">
+            <span>Estimated PnL</span>
+            <strong className={Number(estimate.estimatedPnl) >= 0 ? "green-text" : "red-text"}>
+              ${estimate.estimatedPnl}
+            </strong>
+          </div>
+
+          <button className="primary" onClick={previewPosition}>
+            Preview Position
           </button>
-        )}
 
-        {openPerpsPositions.map((position) => {
-          const liveStats = getPositionLiveStats(position);
+          <button className="secondary" onClick={openPerpsConfirmation}>
+            Open Position
+          </button>
+        </aside>
+      </div>
 
-          return (
-            <div className="history-card" key={position.id}>
-              <div className="quote-box">
-                <span>Open Position</span>
-                <strong>
-                  {position.side} {position.pair} • {position.leverage}x
-                </strong>
-              </div>
+      {perpsPreviewOpen && (
+        <div className="perps-wide-card">
+          <div className="avatar">P</div>
+          <div>
+            <h3>Position Preview Ready</h3>
+            <p>
+              {side} {selectedPair} • ${collateral || "0"} collateral • {leverage}x leverage
+            </p>
+            <small>
+              Position size: ${estimate.positionSize} • Liquidation: ${formatUsd(estimate.liquidationPrice)} • Funding: {estimate.fundingRate}%
+            </small>
+          </div>
+        </div>
+      )}
 
-              <div className="quote-box">
-                <span>Entry Price</span>
-                <strong>${formatUsd(position.entryPrice)}</strong>
-              </div>
+      {perpsStatus && (
+        <div className="quote-box">
+          <span>Perps Status</span>
+          <strong>{perpsStatus}</strong>
+        </div>
+      )}
 
-              <div className="quote-box">
-                <span>Current Price</span>
-                <strong>${formatUsd(liveStats.currentPrice)}</strong>
-              </div>
+      {perpsConfirmOpen && (
+        <div className="perps-wide-card">
+          <div className="avatar">✓</div>
+          <div>
+            <h3>Confirm On-chain Demo Position</h3>
+            <p>
+              {side} {selectedPair} at {leverage}x leverage
+            </p>
+            <small>
+              Wallet will open and submit a 0-value testnet transaction as proof of this demo position.
+            </small>
 
-              <div className="quote-box">
-                <span>Live PnL</span>
-                <strong>${liveStats.livePnl} ({liveStats.liveRoi}%)</strong>
-              </div>
+            <div style={{ marginTop: "12px", display: "flex", gap: "10px", flexWrap: "wrap" }}>
+              <button className="primary" onClick={confirmDemoPosition}>
+                Confirm Open Position
+              </button>
 
-              <div className="quote-box">
-                <span>Position Size</span>
-                <strong>${position.positionSize}</strong>
-              </div>
-
-              <div className="quote-box">
-                <span>Liquidation Price</span>
-                <strong>${position.liquidationPrice}</strong>
-              </div>
-
-              <div className="quote-box">
-                <span>Open Tx Hash</span>
-                <strong className="break-text">{position.openTxHash}</strong>
-              </div>
-
-              <div className="quote-box">
-                <span>Opened</span>
-                <strong>{position.openedAt}</strong>
-              </div>
-
-              <button
-                className="primary"
-                onClick={() => closeOpenPosition(position)}
-                disabled={closingPositionId === position.id}
-              >
-                {closingPositionId === position.id ? "Closing Position..." : "Close Position"}
+              <button className="secondary" onClick={() => setPerpsConfirmOpen(false)}>
+                Cancel
               </button>
             </div>
-          );
-        })}
-
-        <div className="quote-box">
-          <span>Trade History</span>
-          <strong>
-            {perpsHistory.length} closed trade{perpsHistory.length === 1 ? "" : "s"}
-          </strong>
+          </div>
         </div>
+      )}
 
-        {perpsHistory.length > 0 && (
-          <button className="secondary" onClick={clearPerpsHistory}>
-            Clear Trade History
-          </button>
-        )}
+      {perpsExplorerTxUrl && (
+        <a className="secondary" href={perpsExplorerTxUrl} target="_blank" rel="noreferrer">
+          View Latest Perps Tx on Explorer
+        </a>
+      )}
 
-        {perpsHistory.map((item, index) => (
-          <div className="history-card" key={index}>
-            <div className="quote-box">
-              <span>Closed Position</span>
-              <strong>
-                {item.side} {item.pair} • {item.leverage}x
-              </strong>
+      <div className="perps-positions-grid">
+        <section className="perps-position-panel">
+          <div className="perps-panel-head">
+            <div>
+              <h3>Open Positions</h3>
+              <p>Monitor live PnL and close positions anytime.</p>
             </div>
+            <strong>{openPerpsPositions.length}</strong>
+          </div>
 
-            <div className="quote-box">
-              <span>Entry / Exit</span>
-              <strong>
-                ${formatUsd(item.entryPrice)} → ${formatUsd(item.exitPrice || item.entryPrice)}
-              </strong>
-            </div>
+          {openPerpsPositions.length > 0 && (
+            <button className="secondary" onClick={clearOpenPositions}>
+              Clear Open Positions Locally
+            </button>
+          )}
 
-            <div className="quote-box">
-              <span>Collateral</span>
-              <strong>${item.collateral} USDC</strong>
-            </div>
-
-            <div className="quote-box">
-              <span>Position Size</span>
-              <strong>${item.positionSize}</strong>
-            </div>
-
-            <div className="quote-box">
-              <span>Final PnL</span>
-              <strong>${item.finalPnl || item.estimatedPnl || "0.00"}</strong>
-            </div>
-
+          {openPerpsPositions.length === 0 ? (
             <div className="quote-box">
               <span>Status</span>
-              <strong>{item.status}</strong>
+              <strong>No open positions yet</strong>
             </div>
+          ) : (
+            openPerpsPositions.map((position) => {
+              const liveStats = getPositionLiveStats(position);
+              const isPositive = Number(liveStats.livePnl) >= 0;
 
-            {item.openTxHash && (
-              <div className="quote-box">
-                <span>Open Tx Hash</span>
-                <strong className="break-text">{item.openTxHash}</strong>
-              </div>
-            )}
+              return (
+                <div className="position-row" key={position.id}>
+                  <div>
+                    <strong>{position.side} {position.pair}</strong>
+                    <span>{position.leverage}x • {position.orderType || "Market"} • {position.openedAt}</span>
+                  </div>
+                  <div>
+                    <span>Entry</span>
+                    <strong>${formatUsd(position.entryPrice)}</strong>
+                  </div>
+                  <div>
+                    <span>Mark</span>
+                    <strong>${formatUsd(liveStats.currentPrice)}</strong>
+                  </div>
+                  <div>
+                    <span>PnL</span>
+                    <strong className={isPositive ? "green-text" : "red-text"}>
+                      ${liveStats.livePnl} ({liveStats.liveRoi}%)
+                    </strong>
+                  </div>
+                  <button
+                    className="secondary"
+                    disabled={closingPositionId === position.id}
+                    onClick={() => closeOpenPosition(position)}
+                  >
+                    {closingPositionId === position.id ? "Closing..." : "Close Position"}
+                  </button>
+                </div>
+              );
+            })
+          )}
+        </section>
 
-            {item.closeTxHash && (
-              <div className="quote-box">
-                <span>Close Tx Hash</span>
-                <strong className="break-text">{item.closeTxHash}</strong>
-              </div>
-            )}
-
-            <div className="quote-box">
-              <span>Opened</span>
-              <strong>{item.openedAt || item.timestamp}</strong>
+        <section className="perps-position-panel">
+          <div className="perps-panel-head">
+            <div>
+              <h3>Closed Trade History</h3>
+              <p>Closed demo positions are saved locally.</p>
             </div>
-
-            <div className="quote-box">
-              <span>Closed</span>
-              <strong>{item.closedAt || "Not closed"}</strong>
-            </div>
+            <strong>{perpsHistory.length}</strong>
           </div>
-        ))}
-      </Card>
+
+          {perpsHistory.length > 0 && (
+            <button className="secondary" onClick={clearPerpsHistory}>
+              Clear Closed History
+            </button>
+          )}
+
+          {perpsHistory.length === 0 ? (
+            <div className="quote-box">
+              <span>Status</span>
+              <strong>No closed trades yet</strong>
+            </div>
+          ) : (
+            perpsHistory.map((item, index) => (
+              <div className="history-card" key={index}>
+                <div className="quote-box">
+                  <span>Trade</span>
+                  <strong>{item.side} {item.pair} {item.leverage}x</strong>
+                </div>
+
+                <div className="quote-box">
+                  <span>Entry → Exit</span>
+                  <strong>${formatUsd(item.entryPrice)} → ${formatUsd(item.exitPrice)}</strong>
+                </div>
+
+                <div className="quote-box">
+                  <span>Final PnL</span>
+                  <strong className={Number(item.finalPnl) >= 0 ? "green-text" : "red-text"}>
+                    ${item.finalPnl} ({item.finalRoi}%)
+                  </strong>
+                </div>
+
+                <div className="quote-box">
+                  <span>Opened</span>
+                  <strong>{item.openedAt}</strong>
+                </div>
+
+                <div className="quote-box">
+                  <span>Closed</span>
+                  <strong>{item.closedAt}</strong>
+                </div>
+
+                <div className="quote-box">
+                  <span>Open Tx</span>
+                  <strong className="break-text">{item.openTxHash}</strong>
+                </div>
+
+                <div className="quote-box">
+                  <span>Close Tx</span>
+                  <strong className="break-text">{item.closeTxHash}</strong>
+                </div>
+              </div>
+            ))
+          )}
+        </section>
+      </div>
     </div>
   );
 }
+
 
 function Card({ title, children }) {
   return (
