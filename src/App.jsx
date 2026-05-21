@@ -1,0 +1,2916 @@
+import { useEffect, useState } from "react";
+import {
+  usePrivy,
+  useWallets,
+  useLogin,
+  useLogout,
+  useLinkAccount,
+} from "@privy-io/react-auth";
+import { ethers } from "ethers";
+import {
+  NETWORKS,
+  ARC_TOKENS,
+  BASE_SEPOLIA_TOKENS,
+  ETH_SEPOLIA_TOKENS,
+  BASE_SEPOLIA_RPC,
+  BASE_SEPOLIA_USDC,
+} from "./constants";
+import { registerUser, resolveUser, getAllUsers } from "./api";
+import "./App.css";
+
+const tabs = ["swap", "bridge", "liquidity", "perps", "wallet"];
+const CIRCLE_FAUCET_URL = "https://faucet.circle.com/";
+const COINGECKO_PRICE_URL =
+  import.meta.env.VITE_COINGECKO_PRICE_URL ||
+  "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,solana&vs_currencies=usd";
+
+const ERC20_ABI = [
+  "function balanceOf(address owner) view returns (uint256)",
+  "function decimals() view returns (uint8)",
+  "function transfer(address to, uint256 amount) returns (bool)",
+];
+
+function openCircleFaucet() {
+  window.open(CIRCLE_FAUCET_URL, "_blank", "noreferrer");
+}
+
+function getTokensByNetwork(networkName) {
+  if (networkName === NETWORKS.ARC_TESTNET.name) return ARC_TOKENS;
+  if (networkName === NETWORKS.BASE_SEPOLIA.name) return BASE_SEPOLIA_TOKENS;
+  if (networkName === NETWORKS.ETH_SEPOLIA.name) return ETH_SEPOLIA_TOKENS;
+  return ARC_TOKENS;
+}
+
+function getNetworkByName(networkName) {
+  return Object.values(NETWORKS).find((network) => network.name === networkName);
+}
+
+function toHexChainId(chainId) {
+  return `0x${Number(chainId).toString(16)}`;
+}
+
+function cleanAddress(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function isWalletAddress(value) {
+  return /^0x[a-fA-F0-9]{40}$/.test(String(value || "").trim());
+}
+
+function getNativeToken(networkName) {
+  if (networkName === NETWORKS.ARC_TESTNET.name) return "USDC";
+  return "ETH";
+}
+
+function getGasLabel(networkName) {
+  if (networkName === NETWORKS.ARC_TESTNET.name) {
+    return "USDC";
+  }
+
+  return "ETH";
+}
+
+function getSendSupportLabel(networkName) {
+  if (networkName === NETWORKS.ARC_TESTNET.name) {
+    return "Arc Testnet: Native USDC send enabled";
+  }
+
+  return "USDC transfer supported on this testnet, but network gas is ETH";
+}
+
+function getMockTokenUsdPrice(token) {
+  const prices = {
+    USDC: 1,
+    USDT: 1,
+    EURC: 1.08,
+    ETH: 3200,
+  };
+
+  return prices[token] || 1;
+}
+
+function calculateSwapEstimate(fromToken, toToken, amount, slippage) {
+  const numericAmount = Number(amount);
+
+  if (!amount || numericAmount <= 0) {
+    return {
+      estimatedReceive: "",
+      minimumReceive: "",
+      priceImpact: "0.00",
+      routeFee: "0.00",
+    };
+  }
+
+  const fromPrice = getMockTokenUsdPrice(fromToken);
+  const toPrice = getMockTokenUsdPrice(toToken);
+  const baseReceive = (numericAmount * fromPrice) / toPrice;
+
+  const routeFeePercent = 0.15;
+  const priceImpactPercent = fromToken === toToken ? 0 : 0.12;
+  const feeAdjustedReceive = baseReceive * (1 - routeFeePercent / 100);
+  const minimumReceive = feeAdjustedReceive * (1 - Number(slippage) / 100);
+
+  return {
+    estimatedReceive: feeAdjustedReceive.toFixed(toToken === "ETH" ? 6 : 4),
+    minimumReceive: minimumReceive.toFixed(toToken === "ETH" ? 6 : 4),
+    priceImpact: priceImpactPercent.toFixed(2),
+    routeFee: routeFeePercent.toFixed(2),
+  };
+}
+
+function calculateBridgeEstimate(fromChain, toChain, token, amount) {
+  const numericAmount = Number(amount);
+
+  if (!amount || numericAmount <= 0) {
+    return {
+      estimatedReceive: "",
+      bridgeFee: "0.00",
+      estimatedTime: "0 min",
+      routeType: "Select amount",
+    };
+  }
+
+  const isSameChain = fromChain === toChain;
+  const feePercent = isSameChain ? 0 : 0.08;
+  const feeAmount = numericAmount * (feePercent / 100);
+  const estimatedReceive = numericAmount - feeAmount;
+
+  let estimatedTime = "2-4 min";
+
+  if (
+    fromChain === NETWORKS.ARC_TESTNET.name ||
+    toChain === NETWORKS.ARC_TESTNET.name
+  ) {
+    estimatedTime = "3-6 min";
+  }
+
+  if (isSameChain) {
+    estimatedTime = "Instant";
+  }
+
+  return {
+    estimatedReceive: estimatedReceive.toFixed(token === "ETH" ? 6 : 4),
+    bridgeFee: feeAmount.toFixed(token === "ETH" ? 6 : 4),
+    estimatedTime,
+    routeType: isSameChain ? "Same-chain route" : "Cross-testnet route",
+  };
+}
+
+
+function getLiquidityPoolInfo(pool) {
+  const pools = {
+    "USDC / EURC": {
+      apy: "8.40",
+      tvl: 1250000,
+      volume24h: 184000,
+      risk: "Low",
+    },
+    "USDC / USDT": {
+      apy: "6.20",
+      tvl: 2200000,
+      volume24h: 310000,
+      risk: "Low",
+    },
+    "USDC / ETH": {
+      apy: "11.75",
+      tvl: 870000,
+      volume24h: 142000,
+      risk: "Medium",
+    },
+  };
+
+  return (
+    pools[pool] || {
+      apy: "5.00",
+      tvl: 500000,
+      volume24h: 50000,
+      risk: "Medium",
+    }
+  );
+}
+
+function calculateLiquidityEstimate(pool, usdcAmount, pairAmount) {
+  const numericUsdc = Number(usdcAmount);
+  const numericPair = Number(pairAmount);
+  const poolInfo = getLiquidityPoolInfo(pool);
+
+  if (
+    !usdcAmount ||
+    !pairAmount ||
+    numericUsdc <= 0 ||
+    numericPair <= 0
+  ) {
+    return {
+      totalDepositUsd: "0.00",
+      lpTokens: "0.0000",
+      poolShare: "0.0000",
+      estimatedApy: poolInfo.apy,
+      poolTvl: poolInfo.tvl,
+      volume24h: poolInfo.volume24h,
+      risk: poolInfo.risk,
+    };
+  }
+
+  const [, pairToken] = pool.split(" / ");
+  const pairUsdValue = numericPair * getMockTokenUsdPrice(pairToken);
+  const totalDepositUsd = numericUsdc + pairUsdValue;
+  const lpTokens = totalDepositUsd / 10;
+  const poolShare = (totalDepositUsd / (poolInfo.tvl + totalDepositUsd)) * 100;
+
+  return {
+    totalDepositUsd: totalDepositUsd.toFixed(2),
+    lpTokens: lpTokens.toFixed(4),
+    poolShare: poolShare.toFixed(4),
+    estimatedApy: poolInfo.apy,
+    poolTvl: poolInfo.tvl,
+    volume24h: poolInfo.volume24h,
+    risk: poolInfo.risk,
+  };
+}
+
+
+const DEFAULT_PERP_MARKETS = {
+  "BTC/USDC": {
+    price: 68000,
+    funding: "0.012",
+    volatility: "Medium",
+    priceId: "bitcoin",
+  },
+  "ETH/USDC": {
+    price: 3200,
+    funding: "0.009",
+    volatility: "Medium",
+    priceId: "ethereum",
+  },
+  "SOL/USDC": {
+    price: 160,
+    funding: "0.018",
+    volatility: "High",
+    priceId: "solana",
+  },
+};
+
+function formatUsd(value) {
+  const numericValue = Number(value || 0);
+
+  return numericValue.toLocaleString(undefined, {
+    minimumFractionDigits: numericValue >= 1000 ? 2 : 4,
+    maximumFractionDigits: numericValue >= 1000 ? 2 : 4,
+  });
+}
+
+function getPerpMarketInfo(pair, livePrices = {}) {
+  const fallbackMarket = DEFAULT_PERP_MARKETS[pair] || {
+    price: 1000,
+    funding: "0.010",
+    volatility: "Medium",
+    priceId: "unknown",
+  };
+
+  const livePrice = livePrices[pair];
+
+  return {
+    ...fallbackMarket,
+    price: livePrice || fallbackMarket.price,
+    isLive: Boolean(livePrice),
+  };
+}
+
+async function fetchLivePerpPrices() {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8000);
+
+  try {
+    const response = await fetch(COINGECKO_PRICE_URL, {
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      throw new Error("Live price request failed.");
+    }
+
+    const data = await response.json();
+
+    const prices = {
+      "BTC/USDC": Number(data?.bitcoin?.usd),
+      "ETH/USDC": Number(data?.ethereum?.usd),
+      "SOL/USDC": Number(data?.solana?.usd),
+    };
+
+    return Object.fromEntries(
+      Object.entries(prices).filter(([, value]) => Number.isFinite(value) && value > 0)
+    );
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function calculatePerpsEstimate(pair, side, collateral, leverage, entryMovePercent, livePrices = {}) {
+  const numericCollateral = Number(collateral);
+  const numericLeverage = Number(leverage);
+  const numericMove = Number(entryMovePercent);
+  const marketInfo = getPerpMarketInfo(pair, livePrices);
+
+  if (!collateral || numericCollateral <= 0) {
+    return {
+      marketPrice: marketInfo.price,
+      positionSize: "0.00",
+      marginRequired: "0.00",
+      liquidationPrice: "0.00",
+      estimatedPnl: "0.00",
+      estimatedRoi: "0.00",
+      fundingRate: marketInfo.funding,
+      volatility: marketInfo.volatility,
+    };
+  }
+
+  const positionSize = numericCollateral * numericLeverage;
+  const moveDirection = side === "Long" ? 1 : -1;
+  const estimatedPnl = positionSize * ((numericMove * moveDirection) / 100);
+  const estimatedRoi = (estimatedPnl / numericCollateral) * 100;
+
+  const liquidationMovePercent = 100 / numericLeverage;
+  const liquidationPrice =
+    side === "Long"
+      ? marketInfo.price * (1 - liquidationMovePercent / 100)
+      : marketInfo.price * (1 + liquidationMovePercent / 100);
+
+  return {
+    marketPrice: marketInfo.price,
+    positionSize: positionSize.toFixed(2),
+    marginRequired: numericCollateral.toFixed(2),
+    liquidationPrice: liquidationPrice.toFixed(2),
+    estimatedPnl: estimatedPnl.toFixed(2),
+    estimatedRoi: estimatedRoi.toFixed(2),
+    fundingRate: marketInfo.funding,
+    volatility: marketInfo.volatility,
+  };
+}
+
+
+function canSendErc20Token(networkName, token) {
+  return networkName === NETWORKS.BASE_SEPOLIA.name && token === "USDC";
+}
+
+async function switchWalletNetwork(networkName) {
+  const network = getNetworkByName(networkName);
+
+  if (!network) {
+    alert("Unknown network selected.");
+    return;
+  }
+
+  if (!window.ethereum) {
+    alert("No wallet extension found. Please install MetaMask, Rabby, or another EVM wallet.");
+    return;
+  }
+
+  const chainIdHex = toHexChainId(network.chainId);
+
+  try {
+    await window.ethereum.request({
+      method: "wallet_switchEthereumChain",
+      params: [{ chainId: chainIdHex }],
+    });
+  } catch (switchError) {
+    if (switchError.code === 4902) {
+      try {
+        await window.ethereum.request({
+          method: "wallet_addEthereumChain",
+          params: [
+            {
+              chainId: chainIdHex,
+              chainName: network.name,
+              nativeCurrency: {
+                name: network.nativeCurrency,
+                symbol: network.nativeCurrency,
+                decimals: 18,
+              },
+              rpcUrls: [network.rpc],
+              blockExplorerUrls: [network.explorer],
+            },
+          ],
+        });
+      } catch (addError) {
+        console.error("Add network failed:", addError);
+        alert("Could not add the selected network to your wallet.");
+      }
+    } else {
+      console.error("Switch network failed:", switchError);
+      alert("Could not switch network. Please approve the request in your wallet.");
+    }
+  }
+}
+
+export default function App() {
+  const [entered, setEntered] = useState(false);
+  const [activeTab, setActiveTab] = useState("swap");
+  const [selectedNetwork, setSelectedNetwork] = useState(NETWORKS.ARC_TESTNET.name);
+  const [gasOpen, setGasOpen] = useState(false);
+  const [gasToken, setGasToken] = useState("USDC");
+  const [accountOpen, setAccountOpen] = useState(false);
+  const [ethBalance, setEthBalance] = useState("0.0000");
+  const [usdcBalance, setUsdcBalance] = useState("0.00");
+  const [balanceStatus, setBalanceStatus] = useState("");
+  const [registryStatus, setRegistryStatus] = useState("");
+  const [registeredUsers, setRegisteredUsers] = useState([]);
+  const [usersLoading, setUsersLoading] = useState(false);
+  const [txHistory, setTxHistory] = useState([]);
+  const [swapHistory, setSwapHistory] = useState([]);
+  const [bridgeHistory, setBridgeHistory] = useState([]);
+  const [liquidityHistory, setLiquidityHistory] = useState([]);
+  const [perpsHistory, setPerpsHistory] = useState([]);
+
+  const { ready, authenticated, user } = usePrivy();
+  const { wallets } = useWallets();
+  const { login } = useLogin();
+  const { logout } = useLogout();
+  const { linkTwitter } = useLinkAccount();
+
+  const activeWallet = wallets?.[0];
+  const walletAddress = activeWallet?.address || user?.wallet?.address || "";
+
+  const shortWallet = walletAddress
+    ? `${walletAddress.slice(0, 6)}...${walletAddress.slice(-4)}`
+    : "Account";
+
+  const email = user?.email?.address || "No email connected";
+  const hasTwitter = Boolean(user?.twitter?.username);
+  const xUsername = hasTwitter ? `@${user.twitter.username}` : "Not linked";
+
+  const refreshBalances = async () => {
+    if (!walletAddress) return;
+
+    try {
+      setBalanceStatus("Refreshing balances...");
+
+      const provider = new ethers.JsonRpcProvider(BASE_SEPOLIA_RPC);
+      const wallet = cleanAddress(walletAddress);
+      const usdcAddress = cleanAddress(BASE_SEPOLIA_USDC);
+
+      const ethRaw = await provider.getBalance(wallet);
+      setEthBalance(Number(ethers.formatEther(ethRaw)).toFixed(4));
+
+      const usdcContract = new ethers.Contract(usdcAddress, ERC20_ABI, provider);
+      const decimals = await usdcContract.decimals();
+      const usdcRaw = await usdcContract.balanceOf(wallet);
+
+      setUsdcBalance(Number(ethers.formatUnits(usdcRaw, decimals)).toFixed(2));
+      setBalanceStatus("Balances updated.");
+    } catch (error) {
+      console.error("Balance fetch failed:", error);
+      setEthBalance("0.0000");
+      setUsdcBalance("0.00");
+      setBalanceStatus("Could not refresh balances.");
+    }
+  };
+
+  const loadRegisteredUsers = async () => {
+    try {
+      setUsersLoading(true);
+      const result = await getAllUsers();
+
+      if (result.success) {
+        setRegisteredUsers(result.users || []);
+      }
+    } catch (error) {
+      console.error("Load registered users failed:", error);
+    } finally {
+      setUsersLoading(false);
+    }
+  };
+
+  const saveUsernameToRegistry = async () => {
+    if (!hasTwitter || !walletAddress) {
+      setRegistryStatus("Link X and connect a wallet first.");
+      return;
+    }
+
+    setRegistryStatus("Saving username to backend registry...");
+
+    const result = await registerUser(xUsername, walletAddress);
+
+    if (result.success) {
+      setRegistryStatus(result.message || `${xUsername} saved to username registry.`);
+      loadRegisteredUsers();
+    } else {
+      setRegistryStatus(result.error || "Could not save username.");
+    }
+  };
+
+  useEffect(() => {
+    refreshBalances();
+  }, [walletAddress]);
+
+  useEffect(() => {
+    loadRegisteredUsers();
+  }, []);
+
+  useEffect(() => {
+    const savedHistory = localStorage.getItem("circleswap_tx_history");
+
+    if (savedHistory) {
+      try {
+        setTxHistory(JSON.parse(savedHistory));
+      } catch (error) {
+        console.error("Load transaction history failed:", error);
+        setTxHistory([]);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    const savedSwapHistory = localStorage.getItem("circleswap_swap_history");
+
+    if (savedSwapHistory) {
+      try {
+        setSwapHistory(JSON.parse(savedSwapHistory));
+      } catch (error) {
+        console.error("Load swap history failed:", error);
+        setSwapHistory([]);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    const savedBridgeHistory = localStorage.getItem("circleswap_bridge_history");
+
+    if (savedBridgeHistory) {
+      try {
+        setBridgeHistory(JSON.parse(savedBridgeHistory));
+      } catch (error) {
+        console.error("Load bridge history failed:", error);
+        setBridgeHistory([]);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    const savedLiquidityHistory = localStorage.getItem("circleswap_liquidity_history");
+
+    if (savedLiquidityHistory) {
+      try {
+        setLiquidityHistory(JSON.parse(savedLiquidityHistory));
+      } catch (error) {
+        console.error("Load liquidity history failed:", error);
+        setLiquidityHistory([]);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    const savedPerpsHistory = localStorage.getItem("circleswap_perps_history");
+
+    if (savedPerpsHistory) {
+      try {
+        setPerpsHistory(JSON.parse(savedPerpsHistory));
+      } catch (error) {
+        console.error("Load perps history failed:", error);
+        setPerpsHistory([]);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    if (authenticated && hasTwitter && walletAddress) {
+      saveUsernameToRegistry();
+    }
+  }, [authenticated, hasTwitter, walletAddress]);
+
+  const handleLogout = async () => {
+    await logout();
+    setAccountOpen(false);
+    setActiveTab("swap");
+    setEthBalance("0.0000");
+    setUsdcBalance("0.00");
+    setBalanceStatus("");
+    setRegistryStatus("");
+  };
+
+  const handleNetworkChange = async (networkName) => {
+    setSelectedNetwork(networkName);
+    setGasToken(getGasLabel(networkName));
+
+    if (authenticated) {
+      await switchWalletNetwork(networkName);
+    }
+  };
+
+  if (!entered) {
+    return (
+      <div className="site">
+        <nav className="nav">
+          <Brand />
+          <div className="nav-links">
+            <span>Swap</span>
+            <span>Bridge</span>
+            <span>Liquidity</span>
+            <span>Perps</span>
+          </div>
+          <button onClick={() => setEntered(true)}>Enter App</button>
+        </nav>
+
+        <section className="hero">
+          <div className="hero-text">
+            <span className="pill">Arc Testnet • USDC-native DeFi dashboard</span>
+            <h1>Swap, bridge and manage USDC from one Circle-powered app.</h1>
+            <p>
+              CircleSwap is built around Arc Testnet, where USDC is the native
+              gas token. Users can swap testnet assets, bridge between Arc,
+              Base Sepolia and Ethereum Sepolia, and send through verified usernames.
+            </p>
+
+            <div className="actions">
+              <button onClick={() => setEntered(true)}>Launch Dashboard</button>
+              <button className="ghost" onClick={openCircleFaucet}>
+                Claim Testnet Faucet
+              </button>
+            </div>
+
+            <div className="trust">
+              <span>Arc Testnet home chain</span>
+              <span>USDC gas on Arc</span>
+              <span>X username identity</span>
+            </div>
+          </div>
+
+          <div className="hero-widget">
+            <div className="widget-head">
+              <span>Username Registry</span>
+              <strong>Backend Ready</strong>
+            </div>
+
+            <div className="token-box">
+              <small>Identity</small>
+              <div>
+                <strong>@username</strong>
+                <span>X</span>
+              </div>
+            </div>
+
+            <div className="down">↓</div>
+
+            <div className="token-box">
+              <small>Maps to</small>
+              <div>
+                <strong>Wallet Address</strong>
+                <span>Registry</span>
+              </div>
+            </div>
+
+            <div className="widget-note">
+              X usernames now save to the local backend registry.
+            </div>
+          </div>
+        </section>
+
+        <section className="feature-grid">
+          <Feature title="Backend registry" text="Linked X usernames now map to wallet addresses." />
+          <Feature title="Cross-testnet bridge" text="Bridge between Arc Testnet, Base Sepolia and Ethereum Sepolia." />
+          <Feature title="Username payments" text="Send by @username or resolve wallet address to verified username." />
+          <Feature title="Faucet route" text="A clear faucet path helps users claim testnet tokens before testing." />
+        </section>
+
+        <section className="about">
+          <h2>Designed for Circle’s stablecoin ecosystem</h2>
+          <p>
+            CircleSwap focuses on USDC-native testnet flows, verified identities,
+            and safer username-based transfers before adding full swap and bridge integrations.
+          </p>
+          <button onClick={() => setEntered(true)}>Start Using CircleSwap</button>
+        </section>
+      </div>
+    );
+  }
+
+  return (
+    <div className="app">
+      <nav className="nav app-nav">
+        <Brand />
+
+        <div className="tabs">
+          {tabs.map((tab) => (
+            <button
+              key={tab}
+              className={activeTab === tab ? "active" : ""}
+              onClick={() => setActiveTab(tab)}
+            >
+              {tab}
+            </button>
+          ))}
+        </div>
+
+        <div className="right-actions">
+          <div className="gas">
+            <button onClick={() => setGasOpen(!gasOpen)}>⛽ {gasToken}</button>
+            {gasOpen && (
+              <div className="gas-menu">
+                <p>Network gas</p>
+                <button onClick={() => setGasToken(getGasLabel(selectedNetwork))}>
+                  {getGasLabel(selectedNetwork)}
+                </button>
+              </div>
+            )}
+          </div>
+
+          {!authenticated ? (
+            <button onClick={login} disabled={!ready}>
+              Connect
+            </button>
+          ) : (
+            <div className="account-menu">
+              <button onClick={() => setAccountOpen(!accountOpen)}>
+                {hasTwitter ? xUsername : shortWallet} ▾
+              </button>
+
+              {accountOpen && (
+                <div className="account-dropdown">
+                  <button
+                    onClick={() => {
+                      setActiveTab("swap");
+                      setAccountOpen(false);
+                    }}
+                  >
+                    Home
+                  </button>
+                  <button
+                    onClick={() => {
+                      setActiveTab("wallet");
+                      setAccountOpen(false);
+                    }}
+                  >
+                    Profile
+                  </button>
+                  <button onClick={handleLogout}>Logout</button>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </nav>
+
+      <section className="app-head">
+        <div>
+          <span className="pill">Selected network: {selectedNetwork}</span>
+          <h1>{pageTitle(activeTab)}</h1>
+          <p>{pageText(activeTab)}</p>
+        </div>
+
+        <div className="summary">
+          <Mini label="Network" value={selectedNetwork} />
+          <Mini label="Network Gas" value={getGasLabel(selectedNetwork)} />
+          <Mini label="Base USDC" value={`${usdcBalance} USDC`} />
+        </div>
+      </section>
+
+      <ActivitySummary
+        txHistory={txHistory}
+        swapHistory={swapHistory}
+        bridgeHistory={bridgeHistory}
+        liquidityHistory={liquidityHistory}
+        perpsHistory={perpsHistory}
+        registeredUsers={registeredUsers}
+        selectedNetwork={selectedNetwork}
+        setActiveTab={setActiveTab}
+      />
+
+      <main className="workspace">
+        <section className="trade-panel">
+          {activeTab === "swap" && (
+            <Swap
+              selectedNetwork={selectedNetwork}
+              handleNetworkChange={handleNetworkChange}
+              ethBalance={ethBalance}
+              usdcBalance={usdcBalance}
+              swapHistory={swapHistory}
+              setSwapHistory={setSwapHistory}
+            />
+          )}
+          {activeTab === "bridge" && (
+            <Bridge
+              selectedNetwork={selectedNetwork}
+              handleNetworkChange={handleNetworkChange}
+              bridgeHistory={bridgeHistory}
+              setBridgeHistory={setBridgeHistory}
+            />
+          )}
+          {activeTab === "liquidity" && (
+            <Liquidity
+              selectedNetwork={selectedNetwork}
+              handleNetworkChange={handleNetworkChange}
+              liquidityHistory={liquidityHistory}
+              setLiquidityHistory={setLiquidityHistory}
+            />
+          )}
+          {activeTab === "perps" && (
+            <Perps
+              selectedNetwork={selectedNetwork}
+              perpsHistory={perpsHistory}
+              setPerpsHistory={setPerpsHistory}
+            />
+          )}
+          {activeTab === "wallet" && (
+            <Wallet
+              selectedNetwork={selectedNetwork}
+              handleNetworkChange={handleNetworkChange}
+              activeWallet={activeWallet}
+              gasToken={gasToken}
+              ready={ready}
+              authenticated={authenticated}
+              login={login}
+              linkTwitter={linkTwitter}
+              email={email}
+              walletAddress={walletAddress}
+              hasTwitter={hasTwitter}
+              xUsername={xUsername}
+              ethBalance={ethBalance}
+              usdcBalance={usdcBalance}
+              refreshBalances={refreshBalances}
+              balanceStatus={balanceStatus}
+              registryStatus={registryStatus}
+              saveUsernameToRegistry={saveUsernameToRegistry}
+              txHistory={txHistory}
+              setTxHistory={setTxHistory}
+            />
+          )}
+        </section>
+
+        <aside className="side-panel">
+          <h3>Username Registry</h3>
+          <p>
+            Your backend stores linked X usernames and wallet addresses locally.
+          </p>
+
+          <div className="side-card">
+            <span>Your Username</span>
+            <strong>{hasTwitter ? xUsername : "Not linked"}</strong>
+          </div>
+
+          <div className="side-card">
+            <span>Registry Status</span>
+            <strong>{registryStatus || "Waiting"}</strong>
+          </div>
+
+          <button className="secondary" onClick={loadRegisteredUsers}>
+            {usersLoading ? "Refreshing..." : "Refresh Registered Users"}
+          </button>
+
+          {registeredUsers.length > 0 && (
+            <div className="side-card">
+              <span>Registered Users</span>
+              <strong>{registeredUsers.length}</strong>
+            </div>
+          )}
+
+          {registeredUsers.map((registeredUser, index) => (
+            <div className="side-card" key={index}>
+              <span>{registeredUser.username}</span>
+              <strong className="break-text">{registeredUser.wallet}</strong>
+            </div>
+          ))}
+
+          <button className="secondary" onClick={openCircleFaucet}>
+            Claim Faucet from Circle
+          </button>
+
+          <button className="secondary" onClick={refreshBalances}>
+            Refresh Balances
+          </button>
+        </aside>
+      </main>
+    </div>
+  );
+}
+
+
+function ActivitySummary({
+  txHistory,
+  swapHistory,
+  bridgeHistory,
+  liquidityHistory,
+  perpsHistory,
+  registeredUsers,
+  selectedNetwork,
+  setActiveTab,
+}) {
+  const totalTransactions = txHistory.length;
+  const totalSwaps = swapHistory.length;
+  const totalBridges = bridgeHistory.length;
+  const totalLiquidity = liquidityHistory.length;
+  const totalPerps = perpsHistory.length;
+  const totalActivities =
+    totalTransactions + totalSwaps + totalBridges + totalLiquidity + totalPerps;
+
+  const protocolTvl =
+    1250000 + 2200000 + 870000 + totalLiquidity * 2500 + totalPerps * 1000;
+
+  const protocolVolume =
+    184000 +
+    310000 +
+    142000 +
+    totalSwaps * 3500 +
+    totalBridges * 2800 +
+    totalTransactions * 750;
+
+  const recentActivities = [
+    ...txHistory.map((item) => ({
+      type: "Send",
+      title: `${item.amount} ${item.token} to ${item.receiverUsername}`,
+      detail: item.network,
+      time: item.timestamp,
+    })),
+    ...swapHistory.map((item) => ({
+      type: "Swap",
+      title: `${item.fromAmount} ${item.fromToken} → ${item.estimatedReceive} ${item.toToken}`,
+      detail: item.network,
+      time: item.timestamp,
+    })),
+    ...bridgeHistory.map((item) => ({
+      type: "Bridge",
+      title: `${item.amount} ${item.token}: ${item.fromChain} → ${item.toChain}`,
+      detail: item.estimatedTime,
+      time: item.timestamp,
+    })),
+    ...liquidityHistory.map((item) => ({
+      type: "Liquidity",
+      title: `${item.pool} position`,
+      detail: `$${item.totalDepositUsd}`,
+      time: item.timestamp,
+    })),
+    ...perpsHistory.map((item) => ({
+      type: "Perps",
+      title: `${item.side} ${item.pair} ${item.leverage}x`,
+      detail: `$${item.positionSize}`,
+      time: item.timestamp,
+    })),
+  ].slice(0, 6);
+
+  return (
+    <section className="workspace">
+      <section className="trade-panel">
+        <Card title="CircleSwap Analytics">
+          <p className="soft swap-note">
+            Dashboard overview of your local CircleSwap demo activity and protocol stats.
+          </p>
+
+          <div className="summary">
+            <Mini label="Total Activities" value={totalActivities} />
+            <Mini label="Sends" value={totalTransactions} />
+            <Mini label="Swaps" value={totalSwaps} />
+            <Mini label="Bridges" value={totalBridges} />
+            <Mini label="Liquidity" value={totalLiquidity} />
+            <Mini label="Perps" value={totalPerps} />
+          </div>
+
+          <div className="quote-box">
+            <span>Protocol TVL Simulation</span>
+            <strong>${protocolTvl.toLocaleString()}</strong>
+          </div>
+
+          <div className="quote-box">
+            <span>24h Volume Simulation</span>
+            <strong>${protocolVolume.toLocaleString()}</strong>
+          </div>
+
+          <div className="quote-box">
+            <span>Current Network</span>
+            <strong>{selectedNetwork}</strong>
+          </div>
+
+          <div className="quote-box">
+            <span>System Status</span>
+            <strong>Registry online • Faucet linked • Live perps pricing enabled</strong>
+          </div>
+
+          <div style={{ display: "flex", gap: "10px", flexWrap: "wrap", marginTop: "14px" }}>
+            <button className="secondary" onClick={() => setActiveTab("swap")}>
+              Go to Swap
+            </button>
+            <button className="secondary" onClick={() => setActiveTab("bridge")}>
+              Go to Bridge
+            </button>
+            <button className="secondary" onClick={() => setActiveTab("liquidity")}>
+              Go to Liquidity
+            </button>
+            <button className="secondary" onClick={() => setActiveTab("perps")}>
+              Go to Perps
+            </button>
+          </div>
+        </Card>
+      </section>
+
+      <aside className="side-panel">
+        <h3>Recent Activity</h3>
+        <p>Latest local demo actions from this browser.</p>
+
+        <div className="side-card">
+          <span>Registered Users</span>
+          <strong>{registeredUsers.length}</strong>
+        </div>
+
+        {recentActivities.length === 0 ? (
+          <div className="side-card">
+            <span>Status</span>
+            <strong>No activity yet</strong>
+          </div>
+        ) : (
+          recentActivities.map((item, index) => (
+            <div className="side-card" key={index}>
+              <span>{item.type}</span>
+              <strong>{item.title}</strong>
+              <small>{item.detail} • {item.time}</small>
+            </div>
+          ))
+        )}
+      </aside>
+    </section>
+  );
+}
+
+function Wallet({
+  selectedNetwork,
+  handleNetworkChange,
+  activeWallet,
+  gasToken,
+  ready,
+  authenticated,
+  login,
+  linkTwitter,
+  email,
+  walletAddress,
+  hasTwitter,
+  xUsername,
+  ethBalance,
+  usdcBalance,
+  refreshBalances,
+  balanceStatus,
+  registryStatus,
+  saveUsernameToRegistry,
+  txHistory,
+  setTxHistory,
+}) {
+  const [recipientInput, setRecipientInput] = useState("");
+  const [receiverProfile, setReceiverProfile] = useState(null);
+  const [lookupMessage, setLookupMessage] = useState("");
+  const [amount, setAmount] = useState("");
+  const [token, setToken] = useState(getNativeToken(selectedNetwork));
+  const [txHash, setTxHash] = useState("");
+  const [txStatus, setTxStatus] = useState("");
+  const [linkMessage, setLinkMessage] = useState("");
+
+  useEffect(() => {
+    setToken(getNativeToken(selectedNetwork));
+  }, [selectedNetwork]);
+
+  const selectedNetworkInfo = getNetworkByName(selectedNetwork);
+  const nativeToken = getNativeToken(selectedNetwork);
+  const explorerTxUrl =
+    selectedNetworkInfo && txHash ? `${selectedNetworkInfo.explorer}/tx/${txHash}` : "";
+
+  const clearTransactionHistory = () => {
+    setTxHistory([]);
+    localStorage.removeItem("circleswap_tx_history");
+  };
+
+  const handleLinkTwitter = async () => {
+    setLinkMessage("");
+
+    try {
+      setLinkMessage("Opening X linking...");
+      await linkTwitter();
+      setLinkMessage("X account linked. Save your username to the registry after it appears.");
+    } catch (error) {
+      console.error("X link failed:", error);
+      setLinkMessage(error?.message || "Could not link X account.");
+    }
+  };
+
+  const previewReceiver = async () => {
+    setReceiverProfile(null);
+    setLookupMessage("");
+    setTxHash("");
+    setTxStatus("");
+
+    if (!hasTwitter) {
+      setLookupMessage("Link your X account to generate your username first.");
+      return;
+    }
+
+    if (!recipientInput.trim()) {
+      setLookupMessage("Enter a receiver username or wallet address.");
+      return;
+    }
+
+    setLookupMessage("Searching backend registry...");
+
+    const result = await resolveUser(recipientInput);
+
+    if (!result.success) {
+      if (isWalletAddress(recipientInput)) {
+        setLookupMessage("Account not found. This wallet has not linked an X username.");
+      } else {
+        setLookupMessage("Username not found in backend registry.");
+      }
+      return;
+    }
+
+    const foundUser = {
+      username: result.user.username,
+      name: result.user.username,
+      wallet: result.user.wallet,
+    };
+
+    setReceiverProfile(foundUser);
+    setRecipientInput(foundUser.username);
+    setLookupMessage("Receiver verified from backend registry.");
+  };
+
+  const sendNativeTestnetToken = async (signer) => {
+    const receiver = cleanAddress(receiverProfile.wallet);
+
+    const tx = await signer.sendTransaction({
+      to: receiver,
+      value: ethers.parseEther(amount),
+    });
+
+    return tx;
+  };
+
+  const sendBaseSepoliaUsdc = async (signer) => {
+    const usdcAddress = cleanAddress(BASE_SEPOLIA_USDC);
+    const receiver = cleanAddress(receiverProfile.wallet);
+
+    const transferInterface = new ethers.Interface([
+      "function transfer(address to, uint256 amount) returns (bool)",
+    ]);
+
+    const parsedAmount = ethers.parseUnits(amount.toString(), 6);
+
+    const tx = await signer.sendTransaction({
+      to: usdcAddress,
+      data: transferInterface.encodeFunctionData("transfer", [
+        receiver,
+        parsedAmount,
+      ]),
+      value: 0,
+    });
+
+    return tx;
+  };
+
+  const sendTestnetToken = async () => {
+    setTxStatus("");
+    setTxHash("");
+
+    if (!hasTwitter) {
+      setTxStatus("Link your X account to generate your username first.");
+      return;
+    }
+
+    if (!receiverProfile) {
+      setTxStatus("Preview and verify the receiver first.");
+      return;
+    }
+
+    if (!amount || Number(amount) <= 0) {
+      setTxStatus("Enter a valid amount.");
+      return;
+    }
+
+    if (!activeWallet) {
+      setTxStatus("No active wallet found. Reconnect your account.");
+      return;
+    }
+
+    const isNativeSend = token === nativeToken;
+    const isBaseUsdcSend = canSendErc20Token(selectedNetwork, token);
+
+    if (!isNativeSend && !isBaseUsdcSend) {
+      setTxStatus(
+        `${token} transfer is not enabled yet on ${selectedNetwork}.`
+      );
+      return;
+    }
+
+    try {
+      setTxStatus("Switching network...");
+      await switchWalletNetwork(selectedNetwork);
+
+      setTxStatus("Preparing wallet transaction...");
+
+      const ethereumProvider = await activeWallet.getEthereumProvider();
+      const provider = new ethers.BrowserProvider(ethereumProvider);
+      const signer = await provider.getSigner();
+
+      let tx;
+
+      if (isBaseUsdcSend) {
+        tx = await sendBaseSepoliaUsdc(signer);
+      } else {
+        tx = await sendNativeTestnetToken(signer);
+      }
+
+      setTxHash(tx.hash);
+      setTxStatus("Transaction submitted. Waiting for confirmation...");
+
+      await tx.wait();
+
+      const historyItem = {
+        receiverUsername: receiverProfile.username,
+        receiverWallet: receiverProfile.wallet,
+        token,
+        amount,
+        network: selectedNetwork,
+        txHash: tx.hash,
+        timestamp: new Date().toLocaleString(),
+      };
+
+      const updatedHistory = [historyItem, ...txHistory];
+
+      setTxHistory(updatedHistory);
+
+      localStorage.setItem(
+        "circleswap_tx_history",
+        JSON.stringify(updatedHistory)
+      );
+
+      setTxStatus("Testnet transaction confirmed successfully.");
+      await refreshBalances();
+    } catch (error) {
+      console.error("Testnet send failed:", error);
+      setTxStatus(error?.shortMessage || error?.message || "Testnet send failed.");
+    }
+  };
+
+  const canConfirmSend = hasTwitter && receiverProfile && amount;
+
+  if (!authenticated) {
+    return (
+      <div className="wallet-flow">
+        <div className="wallet-card main-login">
+          <h2>Connect Account</h2>
+          <p className="soft">
+            Choose wallet, email or X login. Sending requires X username identity.
+          </p>
+
+          <button className="primary" onClick={login} disabled={!ready}>
+            Connect Wallet / Email / X
+          </button>
+
+          <div className="status-box">
+            <span>Status</span>
+            <strong>Not connected</strong>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="wallet-flow">
+      <div className="wallet-card">
+        <h2>Profile</h2>
+
+        <label>Selected Network</label>
+        <select value={selectedNetwork} onChange={(e) => handleNetworkChange(e.target.value)}>
+          <option>{NETWORKS.ARC_TESTNET.name}</option>
+          <option>{NETWORKS.BASE_SEPOLIA.name}</option>
+          <option>{NETWORKS.ETH_SEPOLIA.name}</option>
+        </select>
+
+        <button className="secondary" onClick={() => switchWalletNetwork(selectedNetwork)}>
+          Switch Wallet to {selectedNetwork}
+        </button>
+
+        <div className="status-box">
+          <span>Email</span>
+          <strong>{email}</strong>
+        </div>
+
+        <div className="status-box">
+          <span>Wallet Address</span>
+          <strong className="break-text">{walletAddress || "No wallet connected"}</strong>
+        </div>
+
+        <div className="status-box">
+          <span>CircleSwap Username</span>
+          <strong>{hasTwitter ? xUsername : "Not generated"}</strong>
+        </div>
+
+        {!hasTwitter ? (
+          <button className="x-btn" onClick={handleLinkTwitter} disabled={!ready}>
+            Link X to Generate Username
+          </button>
+        ) : (
+          <button className="secondary" onClick={saveUsernameToRegistry}>
+            Save Username to Registry
+          </button>
+        )}
+
+        {registryStatus && (
+          <div className="quote-box">
+            <span>Registry Status</span>
+            <strong>{registryStatus}</strong>
+          </div>
+        )}
+
+        {linkMessage && (
+          <div className="quote-box">
+            <span>X Link Status</span>
+            <strong>{linkMessage}</strong>
+          </div>
+        )}
+      </div>
+
+      <div className="wallet-card">
+        <h2>Balances & Faucet</h2>
+
+        <p className="soft">
+          Use the faucet route below to claim testnet funds before trying to send.
+        </p>
+
+        <div className="receive-box">
+          <span>Faucet Route</span>
+          <strong>Circle Faucet</strong>
+        </div>
+
+        <button className="secondary" onClick={openCircleFaucet}>
+          Claim Faucet from Circle
+        </button>
+
+        <div className="receive-box">
+          <span>Base Sepolia ETH</span>
+          <strong>{ethBalance} ETH</strong>
+        </div>
+
+        <div className="receive-box">
+          <span>Base Sepolia USDC</span>
+          <strong>{usdcBalance} USDC</strong>
+        </div>
+
+        <div className="receive-box">
+          <span>Current Network Gas</span>
+          <strong>{getGasLabel(selectedNetwork)}</strong>
+        </div>
+
+        <button className="secondary" onClick={refreshBalances}>
+          Refresh Balances
+        </button>
+
+        {balanceStatus && (
+          <div className="quote-box">
+            <span>Status</span>
+            <strong>{balanceStatus}</strong>
+          </div>
+        )}
+      </div>
+
+      <div className="wallet-card send-card">
+        <h2>Send Testnet Token</h2>
+        <p className="soft">
+          This checks your backend registry. Receivers must save their X username first.
+        </p>
+
+        <label>Receiver Username or Wallet</label>
+        <input
+          placeholder="@username or 0x wallet address"
+          value={recipientInput}
+          onChange={(e) => {
+            setRecipientInput(e.target.value);
+            setReceiverProfile(null);
+            setLookupMessage("");
+            setTxHash("");
+            setTxStatus("");
+          }}
+        />
+
+        <label>Token</label>
+        <select value={token} onChange={(e) => setToken(e.target.value)}>
+          <option>USDC</option>
+          <option>USDT</option>
+          <option>EURC</option>
+          <option>ETH</option>
+        </select>
+
+        <label>Amount</label>
+        <input
+          placeholder="0.00"
+          value={amount}
+          onChange={(e) => {
+            setAmount(e.target.value);
+            setTxHash("");
+            setTxStatus("");
+          }}
+        />
+
+        <button className="secondary" onClick={previewReceiver}>
+          Preview Receiver
+        </button>
+
+        {lookupMessage && (
+          <div className="quote-box">
+            <span>Status</span>
+            <strong>{lookupMessage}</strong>
+          </div>
+        )}
+
+        {receiverProfile && (
+          <div className="profile-preview">
+            <div className="avatar">
+              {receiverProfile.username.replace("@", "").slice(0, 1).toUpperCase()}
+            </div>
+            <div>
+              <h3>{receiverProfile.username}</h3>
+              <p>Verified Registry User</p>
+              <small>{receiverProfile.wallet}</small>
+            </div>
+          </div>
+        )}
+
+        <div className="quote-box">
+          <span>Enabled Send</span>
+          <strong>{getSendSupportLabel(selectedNetwork)}</strong>
+        </div>
+
+        <button className="primary" disabled={!canConfirmSend} onClick={sendTestnetToken}>
+          Confirm Testnet Send
+        </button>
+
+        {txStatus && (
+          <div className="quote-box">
+            <span>Transaction Status</span>
+            <strong>{txStatus}</strong>
+          </div>
+        )}
+
+        {txHash && (
+          <div className="quote-box">
+            <span>Tx Hash</span>
+            <strong className="break-text">{txHash}</strong>
+          </div>
+        )}
+
+        {explorerTxUrl && (
+          <a className="secondary" href={explorerTxUrl} target="_blank" rel="noreferrer">
+            View on Explorer
+          </a>
+        )}
+      </div>
+
+      <div className="wallet-card">
+        <h2>Transaction History</h2>
+        <p className="soft">
+          Successful testnet sends are saved locally in this browser.
+        </p>
+
+        {txHistory.length === 0 ? (
+          <div className="quote-box">
+            <span>Status</span>
+            <strong>No transactions yet</strong>
+          </div>
+        ) : (
+          <>
+            <button className="secondary" onClick={clearTransactionHistory}>
+              Clear History
+            </button>
+
+            {txHistory.map((item, index) => (
+              <div className="history-card" key={index}>
+                <div className="quote-box">
+                  <span>Receiver</span>
+                  <strong>{item.receiverUsername}</strong>
+                </div>
+
+                <div className="quote-box">
+                  <span>Wallet</span>
+                  <strong className="break-text">{item.receiverWallet}</strong>
+                </div>
+
+                <div className="quote-box">
+                  <span>Amount</span>
+                  <strong>
+                    {item.amount} {item.token}
+                  </strong>
+                </div>
+
+                <div className="quote-box">
+                  <span>Network</span>
+                  <strong>{item.network}</strong>
+                </div>
+
+                <div className="quote-box">
+                  <span>Time</span>
+                  <strong>{item.timestamp}</strong>
+                </div>
+
+                <div className="quote-box">
+                  <span>Tx Hash</span>
+                  <strong className="break-text">{item.txHash}</strong>
+                </div>
+              </div>
+            ))}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Brand() {
+  return (
+    <div className="brand">
+      <div className="brand-logo">C</div>
+      <div>
+        <h2>CircleSwap</h2>
+        <span>Arc-native USDC DeFi Layer</span>
+      </div>
+    </div>
+  );
+}
+
+function Feature({ title, text }) {
+  return (
+    <div className="feature">
+      <h3>{title}</h3>
+      <p>{text}</p>
+    </div>
+  );
+}
+
+function Mini({ label, value }) {
+  return (
+    <div className="mini">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+function NetworkSelector({ value, onChange }) {
+  return (
+    <>
+      <label>Network</label>
+      <select value={value} onChange={(e) => onChange(e.target.value)}>
+        <option>{NETWORKS.ARC_TESTNET.name}</option>
+        <option>{NETWORKS.BASE_SEPOLIA.name}</option>
+        <option>{NETWORKS.ETH_SEPOLIA.name}</option>
+      </select>
+    </>
+  );
+}
+
+function Swap({ selectedNetwork, handleNetworkChange, ethBalance, usdcBalance, swapHistory, setSwapHistory }) {
+  const [fromToken, setFromToken] = useState("USDC");
+  const [toToken, setToToken] = useState("EURC");
+  const [fromAmount, setFromAmount] = useState("");
+  const [slippage, setSlippage] = useState("0.5");
+  const [swapStatus, setSwapStatus] = useState("");
+  const [swapPreviewOpen, setSwapPreviewOpen] = useState(false);
+  const [swapConfirmOpen, setSwapConfirmOpen] = useState(false);
+
+  const tokenOptions = getTokensByNetwork(selectedNetwork);
+  const estimate = calculateSwapEstimate(fromToken, toToken, fromAmount, slippage);
+
+  const hasValidSwapAmount = fromAmount && Number(fromAmount) > 0;
+  const isSameToken = fromToken === toToken;
+
+  const switchTokens = () => {
+    setFromToken(toToken);
+    setToToken(fromToken);
+    setSwapStatus("");
+    setSwapPreviewOpen(false);
+  };
+
+  const handleSwapNetworkChange = (network) => {
+    const nextTokens = getTokensByNetwork(network);
+    handleNetworkChange(network);
+    setFromToken(nextTokens[0]);
+    setToToken(nextTokens[1] || nextTokens[0]);
+    setFromAmount("");
+    setSwapStatus("");
+    setSwapPreviewOpen(false);
+  };
+
+  const previewSwap = () => {
+    if (!hasValidSwapAmount) {
+      setSwapStatus("Enter a valid amount first.");
+      return;
+    }
+
+    if (isSameToken) {
+      setSwapStatus("Choose two different tokens to preview a swap.");
+      return;
+    }
+
+    setSwapStatus("Swap route simulated successfully.");
+    setSwapPreviewOpen(true);
+  };
+
+  const openSwapConfirmation = () => {
+    if (!swapPreviewOpen) {
+      setSwapStatus("Preview the swap route first.");
+      return;
+    }
+
+    setSwapConfirmOpen(true);
+    setSwapStatus("Review the swap details before confirming.");
+  };
+
+  const confirmDemoSwap = () => {
+    if (!swapPreviewOpen) {
+      setSwapStatus("Preview the swap route first.");
+      return;
+    }
+
+    const swapItem = {
+      fromToken,
+      toToken,
+      fromAmount,
+      estimatedReceive: estimate.estimatedReceive,
+      minimumReceive: estimate.minimumReceive,
+      slippage,
+      network: selectedNetwork,
+      gasToken: getGasLabel(selectedNetwork),
+      routeFee: estimate.routeFee,
+      priceImpact: estimate.priceImpact,
+      timestamp: new Date().toLocaleString(),
+      status: "Demo swap confirmed",
+    };
+
+    const updatedSwapHistory = [swapItem, ...swapHistory];
+
+    setSwapHistory(updatedSwapHistory);
+
+    localStorage.setItem(
+      "circleswap_swap_history",
+      JSON.stringify(updatedSwapHistory)
+    );
+
+    setSwapStatus(
+      `Demo swap confirmed: ${fromAmount} ${fromToken} → ${estimate.estimatedReceive} ${toToken}.`
+    );
+
+    setSwapConfirmOpen(false);
+  };
+
+  const clearSwapHistory = () => {
+    setSwapHistory([]);
+    localStorage.removeItem("circleswap_swap_history");
+  };
+
+  return (
+    <Card title="Swap">
+      <p className="soft swap-note">
+        Choose the network first, then preview a simulated testnet swap route.
+      </p>
+
+      <NetworkSelector value={selectedNetwork} onChange={handleSwapNetworkChange} />
+
+      <div className="quote-box">
+        <span>Network Gas</span>
+        <strong>{getGasLabel(selectedNetwork)}</strong>
+      </div>
+
+      <div className="quote-box">
+        <span>Swap Mode</span>
+        <strong>Live simulation first • Real router next</strong>
+      </div>
+
+      <div className="quote-box">
+        <span>Base Sepolia USDC Balance</span>
+        <strong>{usdcBalance} USDC</strong>
+      </div>
+
+      <div className="quote-box">
+        <span>Base Sepolia ETH Balance</span>
+        <strong>{ethBalance} ETH</strong>
+      </div>
+
+      <label>You pay</label>
+      <div className="field">
+        <input
+          placeholder="0.00"
+          value={fromAmount}
+          onChange={(e) => {
+            setFromAmount(e.target.value);
+            setSwapStatus("");
+            setSwapPreviewOpen(false);
+          }}
+        />
+        <select value={fromToken} onChange={(e) => {
+          setFromToken(e.target.value);
+          setSwapStatus("");
+          setSwapPreviewOpen(false);
+        }}>
+          {tokenOptions.map((token) => (
+            <option key={token}>{token}</option>
+          ))}
+        </select>
+      </div>
+
+      <button className="swap-switch" onClick={switchTokens}>
+        ⇅
+      </button>
+
+      <label>You receive</label>
+      <div className="field">
+        <input
+          placeholder="Estimated amount"
+          value={estimate.estimatedReceive}
+          readOnly
+        />
+        <select value={toToken} onChange={(e) => {
+          setToToken(e.target.value);
+          setSwapStatus("");
+          setSwapPreviewOpen(false);
+        }}>
+          {tokenOptions.map((token) => (
+            <option key={token}>{token}</option>
+          ))}
+        </select>
+      </div>
+
+      <label>Slippage Tolerance</label>
+      <select value={slippage} onChange={(e) => setSlippage(e.target.value)}>
+        <option value="0.1">0.1%</option>
+        <option value="0.5">0.5%</option>
+        <option value="1">1%</option>
+        <option value="2">2%</option>
+      </select>
+
+      <div className="quote-box">
+        <span>Route</span>
+        <strong>
+          {selectedNetwork}: {fromToken} → {toToken}
+        </strong>
+      </div>
+
+      <div className="quote-box">
+        <span>Estimated Receive</span>
+        <strong>
+          {estimate.estimatedReceive || "0.00"} {toToken}
+        </strong>
+      </div>
+
+      <div className="quote-box">
+        <span>Minimum Receive</span>
+        <strong>
+          {estimate.minimumReceive || "0.00"} {toToken}
+        </strong>
+      </div>
+
+      <div className="quote-box">
+        <span>Route Fee</span>
+        <strong>{estimate.routeFee}%</strong>
+      </div>
+
+      <div className="quote-box">
+        <span>Price Impact</span>
+        <strong>{estimate.priceImpact}%</strong>
+      </div>
+
+      {swapPreviewOpen && (
+        <div className="profile-preview">
+          <div className="avatar">S</div>
+          <div>
+            <h3>Swap Preview Ready</h3>
+            <p>
+              {fromAmount} {fromToken} → {estimate.estimatedReceive} {toToken}
+            </p>
+            <small>
+              Minimum receive after {slippage}% slippage: {estimate.minimumReceive} {toToken}
+            </small>
+          </div>
+        </div>
+      )}
+
+      {swapStatus && (
+        <div className="quote-box">
+          <span>Swap Status</span>
+          <strong>{swapStatus}</strong>
+        </div>
+      )}
+
+      <button className="primary" onClick={previewSwap}>
+        Preview Swap
+      </button>
+
+      <button className="secondary" onClick={openSwapConfirmation}>
+        Open Swap Confirmation
+      </button>
+
+      {swapConfirmOpen && (
+        <div className="profile-preview">
+          <div className="avatar">✓</div>
+          <div>
+            <h3>Confirm Demo Swap</h3>
+            <p>
+              {fromAmount} {fromToken} → {estimate.estimatedReceive} {toToken}
+            </p>
+            <small>
+              Network: {selectedNetwork} • Gas: {getGasLabel(selectedNetwork)} • Slippage: {slippage}%
+            </small>
+
+            <div style={{ marginTop: "12px", display: "flex", gap: "10px", flexWrap: "wrap" }}>
+              <button className="primary" onClick={confirmDemoSwap}>
+                Confirm Demo Swap
+              </button>
+
+              <button className="secondary" onClick={() => setSwapConfirmOpen(false)}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="quote-box">
+        <span>Swap History</span>
+        <strong>{swapHistory.length} demo swap{swapHistory.length === 1 ? "" : "s"}</strong>
+      </div>
+
+      {swapHistory.length > 0 && (
+        <button className="secondary" onClick={clearSwapHistory}>
+          Clear Swap History
+        </button>
+      )}
+
+      {swapHistory.map((item, index) => (
+        <div className="history-card" key={index}>
+          <div className="quote-box">
+            <span>Route</span>
+            <strong>
+              {item.fromAmount} {item.fromToken} → {item.estimatedReceive} {item.toToken}
+            </strong>
+          </div>
+
+          <div className="quote-box">
+            <span>Network</span>
+            <strong>{item.network}</strong>
+          </div>
+
+          <div className="quote-box">
+            <span>Minimum Receive</span>
+            <strong>
+              {item.minimumReceive} {item.toToken}
+            </strong>
+          </div>
+
+          <div className="quote-box">
+            <span>Slippage</span>
+            <strong>{item.slippage}%</strong>
+          </div>
+
+          <div className="quote-box">
+            <span>Status</span>
+            <strong>{item.status}</strong>
+          </div>
+
+          <div className="quote-box">
+            <span>Time</span>
+            <strong>{item.timestamp}</strong>
+          </div>
+        </div>
+      ))}
+    </Card>
+  );
+}
+
+function Bridge({
+  selectedNetwork,
+  handleNetworkChange,
+  bridgeHistory,
+  setBridgeHistory,
+}) {
+  const [fromChain, setFromChain] = useState(selectedNetwork);
+  const [toChain, setToChain] = useState(NETWORKS.BASE_SEPOLIA.name);
+  const [bridgeToken, setBridgeToken] = useState("USDC");
+  const [bridgeAmount, setBridgeAmount] = useState("");
+  const [bridgeStatus, setBridgeStatus] = useState("");
+  const [bridgePreviewOpen, setBridgePreviewOpen] = useState(false);
+  const [bridgeConfirmOpen, setBridgeConfirmOpen] = useState(false);
+
+  const estimate = calculateBridgeEstimate(
+    fromChain,
+    toChain,
+    bridgeToken,
+    bridgeAmount
+  );
+
+  const isSameChain = fromChain === toChain;
+  const hasValidBridgeAmount = bridgeAmount && Number(bridgeAmount) > 0;
+
+  const resetBridgePreview = () => {
+    setBridgeStatus("");
+    setBridgePreviewOpen(false);
+    setBridgeConfirmOpen(false);
+  };
+
+  const handleFromChange = (network) => {
+    setFromChain(network);
+    handleNetworkChange(network);
+    resetBridgePreview();
+  };
+
+  const previewBridge = () => {
+    if (!hasValidBridgeAmount) {
+      setBridgeStatus("Enter a valid bridge amount first.");
+      return;
+    }
+
+    if (isSameChain) {
+      setBridgeStatus("Choose two different chains to bridge.");
+      return;
+    }
+
+    setBridgeStatus("Bridge route simulated successfully.");
+    setBridgePreviewOpen(true);
+  };
+
+  const openBridgeConfirmation = () => {
+    if (!bridgePreviewOpen) {
+      setBridgeStatus("Preview the bridge route first.");
+      return;
+    }
+
+    setBridgeConfirmOpen(true);
+    setBridgeStatus("Review the bridge details before confirming.");
+  };
+
+  const confirmDemoBridge = () => {
+    if (!bridgePreviewOpen) {
+      setBridgeStatus("Preview the bridge route first.");
+      return;
+    }
+
+    const bridgeItem = {
+      fromChain,
+      toChain,
+      token: bridgeToken,
+      amount: bridgeAmount,
+      estimatedReceive: estimate.estimatedReceive,
+      bridgeFee: estimate.bridgeFee,
+      estimatedTime: estimate.estimatedTime,
+      routeType: estimate.routeType,
+      gasToken: getGasLabel(fromChain),
+      timestamp: new Date().toLocaleString(),
+      status: "Demo bridge confirmed",
+    };
+
+    const updatedBridgeHistory = [bridgeItem, ...bridgeHistory];
+
+    setBridgeHistory(updatedBridgeHistory);
+
+    localStorage.setItem(
+      "circleswap_bridge_history",
+      JSON.stringify(updatedBridgeHistory)
+    );
+
+    setBridgeStatus(
+      `Demo bridge confirmed: ${bridgeAmount} ${bridgeToken} from ${fromChain} to ${toChain}.`
+    );
+
+    setBridgeConfirmOpen(false);
+  };
+
+  const clearBridgeHistory = () => {
+    setBridgeHistory([]);
+    localStorage.removeItem("circleswap_bridge_history");
+  };
+
+  return (
+    <Card title="Bridge">
+      <p className="soft swap-note">
+        Bridge testnet assets between Arc Testnet, Base Sepolia and Ethereum Sepolia.
+      </p>
+
+      <label>From Chain</label>
+      <select value={fromChain} onChange={(e) => handleFromChange(e.target.value)}>
+        <option>{NETWORKS.ARC_TESTNET.name}</option>
+        <option>{NETWORKS.BASE_SEPOLIA.name}</option>
+        <option>{NETWORKS.ETH_SEPOLIA.name}</option>
+      </select>
+
+      <label>To Chain</label>
+      <select
+        value={toChain}
+        onChange={(e) => {
+          setToChain(e.target.value);
+          resetBridgePreview();
+        }}
+      >
+        <option>{NETWORKS.ARC_TESTNET.name}</option>
+        <option>{NETWORKS.BASE_SEPOLIA.name}</option>
+        <option>{NETWORKS.ETH_SEPOLIA.name}</option>
+      </select>
+
+      <label>Token</label>
+      <select
+        value={bridgeToken}
+        onChange={(e) => {
+          setBridgeToken(e.target.value);
+          resetBridgePreview();
+        }}
+      >
+        <option>USDC</option>
+        <option>EURC</option>
+        <option>USDT</option>
+        <option>ETH</option>
+      </select>
+
+      <label>Amount</label>
+      <input
+        placeholder="0.00"
+        value={bridgeAmount}
+        onChange={(e) => {
+          setBridgeAmount(e.target.value);
+          resetBridgePreview();
+        }}
+      />
+
+      <div className="quote-box">
+        <span>Route</span>
+        <strong>{fromChain} → {toChain}</strong>
+      </div>
+
+      <div className="quote-box">
+        <span>Route Type</span>
+        <strong>{estimate.routeType}</strong>
+      </div>
+
+      <div className="quote-box">
+        <span>Estimated Receive</span>
+        <strong>
+          {estimate.estimatedReceive || "0.00"} {bridgeToken}
+        </strong>
+      </div>
+
+      <div className="quote-box">
+        <span>Bridge Fee</span>
+        <strong>
+          {estimate.bridgeFee} {bridgeToken}
+        </strong>
+      </div>
+
+      <div className="quote-box">
+        <span>Estimated Time</span>
+        <strong>{estimate.estimatedTime}</strong>
+      </div>
+
+      <div className="quote-box">
+        <span>Gas Note</span>
+        <strong>
+          Arc uses native USDC. Base Sepolia and Ethereum Sepolia currently use ETH gas.
+        </strong>
+      </div>
+
+      {bridgePreviewOpen && (
+        <div className="profile-preview">
+          <div className="avatar">B</div>
+          <div>
+            <h3>Bridge Preview Ready</h3>
+            <p>
+              {bridgeAmount} {bridgeToken} from {fromChain} to {toChain}
+            </p>
+            <small>
+              Estimated receive: {estimate.estimatedReceive} {bridgeToken} • Time:{" "}
+              {estimate.estimatedTime}
+            </small>
+          </div>
+        </div>
+      )}
+
+      {bridgeStatus && (
+        <div className="quote-box">
+          <span>Bridge Status</span>
+          <strong>{bridgeStatus}</strong>
+        </div>
+      )}
+
+      <button className="primary" onClick={previewBridge}>
+        Preview Bridge
+      </button>
+
+      <button className="secondary" onClick={openBridgeConfirmation}>
+        Open Bridge Confirmation
+      </button>
+
+      {bridgeConfirmOpen && (
+        <div className="profile-preview">
+          <div className="avatar">✓</div>
+          <div>
+            <h3>Confirm Demo Bridge</h3>
+            <p>
+              {bridgeAmount} {bridgeToken}: {fromChain} → {toChain}
+            </p>
+            <small>
+              Receive: {estimate.estimatedReceive} {bridgeToken} • Fee:{" "}
+              {estimate.bridgeFee} {bridgeToken} • Time: {estimate.estimatedTime}
+            </small>
+
+            <div style={{ marginTop: "12px", display: "flex", gap: "10px", flexWrap: "wrap" }}>
+              <button className="primary" onClick={confirmDemoBridge}>
+                Confirm Demo Bridge
+              </button>
+
+              <button className="secondary" onClick={() => setBridgeConfirmOpen(false)}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="quote-box">
+        <span>Bridge History</span>
+        <strong>
+          {bridgeHistory.length} demo bridge{bridgeHistory.length === 1 ? "" : "s"}
+        </strong>
+      </div>
+
+      {bridgeHistory.length > 0 && (
+        <button className="secondary" onClick={clearBridgeHistory}>
+          Clear Bridge History
+        </button>
+      )}
+
+      {bridgeHistory.map((item, index) => (
+        <div className="history-card" key={index}>
+          <div className="quote-box">
+            <span>Route</span>
+            <strong>
+              {item.amount} {item.token}: {item.fromChain} → {item.toChain}
+            </strong>
+          </div>
+
+          <div className="quote-box">
+            <span>Estimated Receive</span>
+            <strong>
+              {item.estimatedReceive} {item.token}
+            </strong>
+          </div>
+
+          <div className="quote-box">
+            <span>Bridge Fee</span>
+            <strong>
+              {item.bridgeFee} {item.token}
+            </strong>
+          </div>
+
+          <div className="quote-box">
+            <span>Estimated Time</span>
+            <strong>{item.estimatedTime}</strong>
+          </div>
+
+          <div className="quote-box">
+            <span>Status</span>
+            <strong>{item.status}</strong>
+          </div>
+
+          <div className="quote-box">
+            <span>Time</span>
+            <strong>{item.timestamp}</strong>
+          </div>
+        </div>
+      ))}
+    </Card>
+  );
+}
+
+function Liquidity({
+  selectedNetwork,
+  handleNetworkChange,
+  liquidityHistory,
+  setLiquidityHistory,
+}) {
+  const [selectedPool, setSelectedPool] = useState("USDC / EURC");
+  const [usdcAmount, setUsdcAmount] = useState("");
+  const [pairAmount, setPairAmount] = useState("");
+  const [liquidityStatus, setLiquidityStatus] = useState("");
+  const [liquidityPreviewOpen, setLiquidityPreviewOpen] = useState(false);
+  const [liquidityConfirmOpen, setLiquidityConfirmOpen] = useState(false);
+
+  const poolInfo = getLiquidityPoolInfo(selectedPool);
+  const estimate = calculateLiquidityEstimate(selectedPool, usdcAmount, pairAmount);
+  const pairToken = selectedPool.split(" / ")[1];
+  const hasValidLiquidityAmount =
+    usdcAmount &&
+    pairAmount &&
+    Number(usdcAmount) > 0 &&
+    Number(pairAmount) > 0;
+
+  const resetLiquidityPreview = () => {
+    setLiquidityStatus("");
+    setLiquidityPreviewOpen(false);
+    setLiquidityConfirmOpen(false);
+  };
+
+  const previewLiquidity = () => {
+    if (!hasValidLiquidityAmount) {
+      setLiquidityStatus("Enter valid USDC and pair token amounts first.");
+      return;
+    }
+
+    setLiquidityStatus("Liquidity deposit simulated successfully.");
+    setLiquidityPreviewOpen(true);
+  };
+
+  const openLiquidityConfirmation = () => {
+    if (!liquidityPreviewOpen) {
+      setLiquidityStatus("Preview the liquidity deposit first.");
+      return;
+    }
+
+    setLiquidityConfirmOpen(true);
+    setLiquidityStatus("Review the liquidity details before confirming.");
+  };
+
+  const confirmDemoLiquidity = () => {
+    if (!liquidityPreviewOpen) {
+      setLiquidityStatus("Preview the liquidity deposit first.");
+      return;
+    }
+
+    const liquidityItem = {
+      pool: selectedPool,
+      usdcAmount,
+      pairToken,
+      pairAmount,
+      totalDepositUsd: estimate.totalDepositUsd,
+      lpTokens: estimate.lpTokens,
+      poolShare: estimate.poolShare,
+      estimatedApy: estimate.estimatedApy,
+      network: selectedNetwork,
+      gasToken: getGasLabel(selectedNetwork),
+      timestamp: new Date().toLocaleString(),
+      status: "Demo liquidity added",
+    };
+
+    const updatedLiquidityHistory = [liquidityItem, ...liquidityHistory];
+
+    setLiquidityHistory(updatedLiquidityHistory);
+
+    localStorage.setItem(
+      "circleswap_liquidity_history",
+      JSON.stringify(updatedLiquidityHistory)
+    );
+
+    setLiquidityStatus(
+      `Demo liquidity added: ${usdcAmount} USDC + ${pairAmount} ${pairToken} into ${selectedPool}.`
+    );
+
+    setLiquidityConfirmOpen(false);
+  };
+
+  const clearLiquidityHistory = () => {
+    setLiquidityHistory([]);
+    localStorage.removeItem("circleswap_liquidity_history");
+  };
+
+  return (
+    <Card title="Liquidity Pool">
+      <p className="soft swap-note">
+        Add demo liquidity to USDC-based testnet pools and preview your pool share.
+      </p>
+
+      <NetworkSelector
+        value={selectedNetwork}
+        onChange={(network) => {
+          handleNetworkChange(network);
+          resetLiquidityPreview();
+        }}
+      />
+
+      <label>Select Pool</label>
+      <select
+        value={selectedPool}
+        onChange={(e) => {
+          setSelectedPool(e.target.value);
+          setUsdcAmount("");
+          setPairAmount("");
+          resetLiquidityPreview();
+        }}
+      >
+        <option>USDC / EURC</option>
+        <option>USDC / USDT</option>
+        <option>USDC / ETH</option>
+      </select>
+
+      <div className="quote-box">
+        <span>Network Gas</span>
+        <strong>{getGasLabel(selectedNetwork)}</strong>
+      </div>
+
+      <div className="quote-box">
+        <span>Pool APY</span>
+        <strong>{poolInfo.apy}%</strong>
+      </div>
+
+      <div className="quote-box">
+        <span>Pool TVL</span>
+        <strong>${poolInfo.tvl.toLocaleString()}</strong>
+      </div>
+
+      <div className="quote-box">
+        <span>24h Volume</span>
+        <strong>${poolInfo.volume24h.toLocaleString()}</strong>
+      </div>
+
+      <div className="quote-box">
+        <span>Risk Level</span>
+        <strong>{poolInfo.risk}</strong>
+      </div>
+
+      <label>USDC Amount</label>
+      <input
+        placeholder="0.00"
+        value={usdcAmount}
+        onChange={(e) => {
+          setUsdcAmount(e.target.value);
+          resetLiquidityPreview();
+        }}
+      />
+
+      <label>{pairToken} Amount</label>
+      <input
+        placeholder="0.00"
+        value={pairAmount}
+        onChange={(e) => {
+          setPairAmount(e.target.value);
+          resetLiquidityPreview();
+        }}
+      />
+
+      <div className="quote-box">
+        <span>Total Deposit Value</span>
+        <strong>${estimate.totalDepositUsd}</strong>
+      </div>
+
+      <div className="quote-box">
+        <span>Estimated LP Tokens</span>
+        <strong>{estimate.lpTokens}</strong>
+      </div>
+
+      <div className="quote-box">
+        <span>Estimated Pool Share</span>
+        <strong>{estimate.poolShare}%</strong>
+      </div>
+
+      <div className="quote-box">
+        <span>Estimated APY</span>
+        <strong>{estimate.estimatedApy}%</strong>
+      </div>
+
+      {liquidityPreviewOpen && (
+        <div className="profile-preview">
+          <div className="avatar">L</div>
+          <div>
+            <h3>Liquidity Preview Ready</h3>
+            <p>
+              {usdcAmount} USDC + {pairAmount} {pairToken} into {selectedPool}
+            </p>
+            <small>
+              LP Tokens: {estimate.lpTokens} • Pool Share: {estimate.poolShare}% • APY:{" "}
+              {estimate.estimatedApy}%
+            </small>
+          </div>
+        </div>
+      )}
+
+      {liquidityStatus && (
+        <div className="quote-box">
+          <span>Liquidity Status</span>
+          <strong>{liquidityStatus}</strong>
+        </div>
+      )}
+
+      <button className="primary" onClick={previewLiquidity}>
+        Preview Add Liquidity
+      </button>
+
+      <button className="secondary" onClick={openLiquidityConfirmation}>
+        Open Liquidity Confirmation
+      </button>
+
+      {liquidityConfirmOpen && (
+        <div className="profile-preview">
+          <div className="avatar">✓</div>
+          <div>
+            <h3>Confirm Demo Liquidity</h3>
+            <p>
+              {usdcAmount} USDC + {pairAmount} {pairToken}
+            </p>
+            <small>
+              Pool: {selectedPool} • Network: {selectedNetwork} • Gas:{" "}
+              {getGasLabel(selectedNetwork)}
+            </small>
+
+            <div style={{ marginTop: "12px", display: "flex", gap: "10px", flexWrap: "wrap" }}>
+              <button className="primary" onClick={confirmDemoLiquidity}>
+                Confirm Demo Liquidity
+              </button>
+
+              <button className="secondary" onClick={() => setLiquidityConfirmOpen(false)}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="quote-box">
+        <span>Liquidity History</span>
+        <strong>
+          {liquidityHistory.length} demo position{liquidityHistory.length === 1 ? "" : "s"}
+        </strong>
+      </div>
+
+      {liquidityHistory.length > 0 && (
+        <button className="secondary" onClick={clearLiquidityHistory}>
+          Clear Liquidity History
+        </button>
+      )}
+
+      {liquidityHistory.map((item, index) => (
+        <div className="history-card" key={index}>
+          <div className="quote-box">
+            <span>Pool</span>
+            <strong>{item.pool}</strong>
+          </div>
+
+          <div className="quote-box">
+            <span>Deposit</span>
+            <strong>
+              {item.usdcAmount} USDC + {item.pairAmount} {item.pairToken}
+            </strong>
+          </div>
+
+          <div className="quote-box">
+            <span>Total Value</span>
+            <strong>${item.totalDepositUsd}</strong>
+          </div>
+
+          <div className="quote-box">
+            <span>LP Tokens</span>
+            <strong>{item.lpTokens}</strong>
+          </div>
+
+          <div className="quote-box">
+            <span>Pool Share</span>
+            <strong>{item.poolShare}%</strong>
+          </div>
+
+          <div className="quote-box">
+            <span>APY</span>
+            <strong>{item.estimatedApy}%</strong>
+          </div>
+
+          <div className="quote-box">
+            <span>Status</span>
+            <strong>{item.status}</strong>
+          </div>
+
+          <div className="quote-box">
+            <span>Time</span>
+            <strong>{item.timestamp}</strong>
+          </div>
+        </div>
+      ))}
+    </Card>
+  );
+}
+
+function Perps({ selectedNetwork, perpsHistory, setPerpsHistory }) {
+  const [selectedPair, setSelectedPair] = useState("BTC/USDC");
+  const [side, setSide] = useState("Long");
+  const [collateral, setCollateral] = useState("");
+  const [leverage, setLeverage] = useState("2");
+  const [entryMovePercent, setEntryMovePercent] = useState("1");
+  const [perpsStatus, setPerpsStatus] = useState("");
+  const [perpsPreviewOpen, setPerpsPreviewOpen] = useState(false);
+  const [perpsConfirmOpen, setPerpsConfirmOpen] = useState(false);
+  const [livePerpPrices, setLivePerpPrices] = useState({});
+  const [priceStatus, setPriceStatus] = useState("Loading live market prices...");
+  const [lastPriceUpdate, setLastPriceUpdate] = useState("");
+
+  const estimate = calculatePerpsEstimate(
+    selectedPair,
+    side,
+    collateral,
+    leverage,
+    entryMovePercent,
+    livePerpPrices
+  );
+
+  const hasValidCollateral = collateral && Number(collateral) > 0;
+
+  const loadLivePrices = async () => {
+    try {
+      setPriceStatus("Refreshing live market prices...");
+
+      const prices = await fetchLivePerpPrices();
+
+      setLivePerpPrices(prices);
+      setLastPriceUpdate(new Date().toLocaleTimeString());
+      setPriceStatus("Live prices updated from CoinGecko.");
+    } catch (error) {
+      console.error("Live perps price fetch failed:", error);
+      setPriceStatus("Could not load live prices. Showing fallback demo prices.");
+    }
+  };
+
+  useEffect(() => {
+    loadLivePrices();
+
+    const interval = setInterval(loadLivePrices, 60000);
+
+    return () => clearInterval(interval);
+  }, []);
+
+  const resetPerpsPreview = () => {
+    setPerpsStatus("");
+    setPerpsPreviewOpen(false);
+    setPerpsConfirmOpen(false);
+  };
+
+  const selectMarket = (pair, selectedSide) => {
+    setSelectedPair(pair);
+    setSide(selectedSide);
+    resetPerpsPreview();
+  };
+
+  const previewPosition = () => {
+    if (!hasValidCollateral) {
+      setPerpsStatus("Enter a valid USDC collateral amount first.");
+      return;
+    }
+
+    setPerpsStatus("Perps position simulated successfully.");
+    setPerpsPreviewOpen(true);
+  };
+
+  const openPerpsConfirmation = () => {
+    if (!perpsPreviewOpen) {
+      setPerpsStatus("Preview the perps position first.");
+      return;
+    }
+
+    setPerpsConfirmOpen(true);
+    setPerpsStatus("Review the position details before confirming.");
+  };
+
+  const confirmDemoPosition = () => {
+    if (!perpsPreviewOpen) {
+      setPerpsStatus("Preview the perps position first.");
+      return;
+    }
+
+    const positionItem = {
+      pair: selectedPair,
+      side,
+      collateral,
+      leverage,
+      entryMovePercent,
+      entryPrice: estimate.marketPrice,
+      positionSize: estimate.positionSize,
+      marginRequired: estimate.marginRequired,
+      liquidationPrice: estimate.liquidationPrice,
+      estimatedPnl: estimate.estimatedPnl,
+      estimatedRoi: estimate.estimatedRoi,
+      fundingRate: estimate.fundingRate,
+      network: selectedNetwork,
+      gasToken: getGasLabel(selectedNetwork),
+      timestamp: new Date().toLocaleString(),
+      status: "Demo position opened",
+    };
+
+    const updatedPerpsHistory = [positionItem, ...perpsHistory];
+
+    setPerpsHistory(updatedPerpsHistory);
+
+    localStorage.setItem(
+      "circleswap_perps_history",
+      JSON.stringify(updatedPerpsHistory)
+    );
+
+    setPerpsStatus(
+      `Demo ${side.toLowerCase()} position opened: ${selectedPair} at ${leverage}x leverage.`
+    );
+
+    setPerpsConfirmOpen(false);
+  };
+
+  const clearPerpsHistory = () => {
+    setPerpsHistory([]);
+    localStorage.removeItem("circleswap_perps_history");
+  };
+
+  return (
+    <div>
+      <div className="markets">
+        {["BTC/USDC", "ETH/USDC", "SOL/USDC"].map((pair) => {
+          const marketInfo = getPerpMarketInfo(pair, livePerpPrices);
+
+          return (
+            <div className="market" key={pair}>
+              <h3>{pair}</h3>
+              <p>${formatUsd(marketInfo.price)} • {marketInfo.isLive ? "Live" : "Fallback"} • Funding {marketInfo.funding}%</p>
+              <div>
+                <button onClick={() => selectMarket(pair, "Long")}>Long</button>
+                <button className="short" onClick={() => selectMarket(pair, "Short")}>
+                  Short
+                </button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <Card title="Open Perps Position">
+        <p className="soft swap-note">
+          Simulate a USDC-margined perpetual position with live BTC, ETH and SOL market prices.
+        </p>
+
+        <div className="quote-box">
+          <span>Price Source</span>
+          <strong>{priceStatus}</strong>
+        </div>
+
+        {lastPriceUpdate && (
+          <div className="quote-box">
+            <span>Last Price Update</span>
+            <strong>{lastPriceUpdate}</strong>
+          </div>
+        )}
+
+        <button className="secondary" onClick={loadLivePrices}>
+          Refresh Live Prices
+        </button>
+
+        <div className="quote-box">
+          <span>Network</span>
+          <strong>{selectedNetwork}</strong>
+        </div>
+
+        <div className="quote-box">
+          <span>Network Gas</span>
+          <strong>{getGasLabel(selectedNetwork)}</strong>
+        </div>
+
+        <label>Market</label>
+        <select
+          value={selectedPair}
+          onChange={(e) => {
+            setSelectedPair(e.target.value);
+            resetPerpsPreview();
+          }}
+        >
+          <option>BTC/USDC</option>
+          <option>ETH/USDC</option>
+          <option>SOL/USDC</option>
+        </select>
+
+        <label>Side</label>
+        <select
+          value={side}
+          onChange={(e) => {
+            setSide(e.target.value);
+            resetPerpsPreview();
+          }}
+        >
+          <option>Long</option>
+          <option>Short</option>
+        </select>
+
+        <label>Collateral</label>
+        <select>
+          <option>USDC</option>
+        </select>
+
+        <label>Collateral Amount</label>
+        <input
+          placeholder="Amount in USDC"
+          value={collateral}
+          onChange={(e) => {
+            setCollateral(e.target.value);
+            resetPerpsPreview();
+          }}
+        />
+
+        <label>Leverage</label>
+        <select
+          value={leverage}
+          onChange={(e) => {
+            setLeverage(e.target.value);
+            resetPerpsPreview();
+          }}
+        >
+          <option value="2">2x</option>
+          <option value="5">5x</option>
+          <option value="10">10x</option>
+        </select>
+
+        <label>Price Move Preview</label>
+        <select
+          value={entryMovePercent}
+          onChange={(e) => {
+            setEntryMovePercent(e.target.value);
+            resetPerpsPreview();
+          }}
+        >
+          <option value="1">1%</option>
+          <option value="2">2%</option>
+          <option value="5">5%</option>
+          <option value="-1">-1%</option>
+          <option value="-2">-2%</option>
+          <option value="-5">-5%</option>
+        </select>
+
+        <div className="quote-box">
+          <span>Market Price</span>
+          <strong>${formatUsd(estimate.marketPrice)}</strong>
+        </div>
+
+        <div className="quote-box">
+          <span>Position Size</span>
+          <strong>${estimate.positionSize}</strong>
+        </div>
+
+        <div className="quote-box">
+          <span>Margin Required</span>
+          <strong>${estimate.marginRequired}</strong>
+        </div>
+
+        <div className="quote-box">
+          <span>Estimated Liquidation Price</span>
+          <strong>${estimate.liquidationPrice}</strong>
+        </div>
+
+        <div className="quote-box">
+          <span>Estimated PnL</span>
+          <strong>${estimate.estimatedPnl}</strong>
+        </div>
+
+        <div className="quote-box">
+          <span>Estimated ROI</span>
+          <strong>{estimate.estimatedRoi}%</strong>
+        </div>
+
+        <div className="quote-box">
+          <span>Funding Rate</span>
+          <strong>{estimate.fundingRate}%</strong>
+        </div>
+
+        <div className="quote-box">
+          <span>Volatility</span>
+          <strong>{estimate.volatility}</strong>
+        </div>
+
+        {perpsPreviewOpen && (
+          <div className="profile-preview">
+            <div className="avatar">P</div>
+            <div>
+              <h3>Perps Preview Ready</h3>
+              <p>
+                {side} {selectedPair} with ${collateral} collateral at {leverage}x
+              </p>
+              <small>
+                Size: ${estimate.positionSize} • Liq: ${estimate.liquidationPrice} • PnL: $
+                {estimate.estimatedPnl}
+              </small>
+            </div>
+          </div>
+        )}
+
+        {perpsStatus && (
+          <div className="quote-box">
+            <span>Perps Status</span>
+            <strong>{perpsStatus}</strong>
+          </div>
+        )}
+
+        <button className="primary" onClick={previewPosition}>
+          Preview Position
+        </button>
+
+        <button className="secondary" onClick={openPerpsConfirmation}>
+          Open Position Confirmation
+        </button>
+
+        {perpsConfirmOpen && (
+          <div className="profile-preview">
+            <div className="avatar">✓</div>
+            <div>
+              <h3>Confirm Demo Position</h3>
+              <p>
+                {side} {selectedPair} • ${collateral} margin • {leverage}x leverage
+              </p>
+              <small>
+                Size: ${estimate.positionSize} • Liquidation: ${estimate.liquidationPrice} • Gas:{" "}
+                {getGasLabel(selectedNetwork)}
+              </small>
+
+              <div style={{ marginTop: "12px", display: "flex", gap: "10px", flexWrap: "wrap" }}>
+                <button className="primary" onClick={confirmDemoPosition}>
+                  Confirm Demo Position
+                </button>
+
+                <button className="secondary" onClick={() => setPerpsConfirmOpen(false)}>
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        <div className="quote-box">
+          <span>Open Positions History</span>
+          <strong>
+            {perpsHistory.length} demo position{perpsHistory.length === 1 ? "" : "s"}
+          </strong>
+        </div>
+
+        {perpsHistory.length > 0 && (
+          <button className="secondary" onClick={clearPerpsHistory}>
+            Clear Perps History
+          </button>
+        )}
+
+        {perpsHistory.map((item, index) => (
+          <div className="history-card" key={index}>
+            <div className="quote-box">
+              <span>Position</span>
+              <strong>
+                {item.side} {item.pair} • {item.leverage}x
+              </strong>
+            </div>
+
+            <div className="quote-box">
+              <span>Collateral</span>
+              <strong>${item.collateral} USDC</strong>
+            </div>
+
+            <div className="quote-box">
+              <span>Position Size</span>
+              <strong>${item.positionSize}</strong>
+            </div>
+
+            <div className="quote-box">
+              <span>Entry Price</span>
+              <strong>${formatUsd(item.entryPrice)}</strong>
+            </div>
+
+            <div className="quote-box">
+              <span>Liquidation Price</span>
+              <strong>${item.liquidationPrice}</strong>
+            </div>
+
+            <div className="quote-box">
+              <span>Estimated PnL</span>
+              <strong>${item.estimatedPnl}</strong>
+            </div>
+
+            <div className="quote-box">
+              <span>Status</span>
+              <strong>{item.status}</strong>
+            </div>
+
+            <div className="quote-box">
+              <span>Time</span>
+              <strong>{item.timestamp}</strong>
+            </div>
+          </div>
+        ))}
+      </Card>
+    </div>
+  );
+}
+
+function Card({ title, children }) {
+  return (
+    <div className="card">
+      <h2>{title}</h2>
+      {children}
+    </div>
+  );
+}
+
+function pageTitle(tab) {
+  return {
+    swap: "Swap tokens across Arc, Base Sepolia and Ethereum Sepolia",
+    bridge: "Bridge between Arc Testnet and supported Sepolia networks",
+    liquidity: "Provide liquidity to USDC-based testnet pools",
+    perps: "Trade demo perpetual markets with USDC collateral",
+    wallet: "Connect account and manage username-based sending",
+  }[tab];
+}
+
+function pageText(tab) {
+  return {
+    swap: "Arc Testnet supports USDC, USDT, EURC and ETH testnet swap flows. You can also switch to Base Sepolia or Ethereum Sepolia.",
+    bridge: "Move USDC and supported test tokens between Arc Testnet, Base Sepolia and Ethereum Sepolia.",
+    liquidity: "Supply USDC-based liquidity pools on Arc Testnet and supported test networks.",
+    perps: "Open demo long or short positions on USDC pairs before adding real perp integrations.",
+    wallet: "Sending now checks your backend username registry instead of only a demo list.",
+  }[tab];
+}
