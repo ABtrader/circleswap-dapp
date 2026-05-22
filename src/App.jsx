@@ -15,7 +15,6 @@ import {
   BASE_SEPOLIA_RPC,
   BASE_SEPOLIA_USDC,
 } from "./constants";
-import { registerUser, resolveUser, getAllUsers } from "./api";
 import "./App.css";
 
 const tabs = ["swap", "bridge", "liquidity", "perps", "wallet"];
@@ -417,9 +416,7 @@ export default function App() {
   const [ethBalance, setEthBalance] = useState("0.0000");
   const [usdcBalance, setUsdcBalance] = useState("0.00");
   const [balanceStatus, setBalanceStatus] = useState("");
-  const [registryStatus, setRegistryStatus] = useState("");
-  const [registeredUsers, setRegisteredUsers] = useState([]);
-  const [usersLoading, setUsersLoading] = useState(false);
+  const [registryStatus, setLocalStatus] = useState("");
   const [txHistory, setTxHistory] = useState([]);
   const [swapHistory, setSwapHistory] = useState([]);
   const [bridgeHistory, setBridgeHistory] = useState([]);
@@ -471,46 +468,25 @@ export default function App() {
     }
   };
 
-  const loadRegisteredUsers = async () => {
-    try {
-      setUsersLoading(true);
-      const result = await getAllUsers();
-
-      if (result.success) {
-        setRegisteredUsers(result.users || []);
-      }
-    } catch (error) {
-      console.error("Load registered users failed:", error);
-    } finally {
-      setUsersLoading(false);
-    }
-  };
-
-  const saveUsernameToRegistry = async () => {
+  const saveUsernameToLocal = () => {
     if (!hasTwitter || !walletAddress) {
-      setRegistryStatus("Link X and connect a wallet first.");
+      setLocalStatus("Link X and connect a wallet first.");
       return;
     }
 
-    setRegistryStatus("Saving username to backend registry...");
+    const localProfile = {
+      username: xUsername,
+      wallet: walletAddress,
+      savedAt: new Date().toISOString(),
+    };
 
-    const result = await registerUser(xUsername, walletAddress);
-
-    if (result.success) {
-      setRegistryStatus(result.message || `${xUsername} saved to username registry.`);
-      loadRegisteredUsers();
-    } else {
-      setRegistryStatus(result.error || "Could not save username.");
-    }
+    localStorage.setItem("circleswap_local_profile", JSON.stringify(localProfile));
+    setLocalStatus(`${xUsername} saved locally on this browser. No backend storage used.`);
   };
 
   useEffect(() => {
     refreshBalances();
   }, [walletAddress]);
-
-  useEffect(() => {
-    loadRegisteredUsers();
-  }, []);
 
   useEffect(() => {
     const savedHistory = localStorage.getItem("circleswap_tx_history");
@@ -592,7 +568,14 @@ export default function App() {
 
   useEffect(() => {
     if (authenticated && hasTwitter && walletAddress) {
-      saveUsernameToRegistry();
+      const localProfile = {
+        username: xUsername,
+        wallet: walletAddress,
+        savedAt: new Date().toISOString(),
+      };
+
+      localStorage.setItem("circleswap_local_profile", JSON.stringify(localProfile));
+      setLocalStatus(`${xUsername} ready locally. No backend storage used.`);
     }
   }, [authenticated, hasTwitter, walletAddress]);
 
@@ -603,7 +586,7 @@ export default function App() {
     setEthBalance("0.0000");
     setUsdcBalance("0.00");
     setBalanceStatus("");
-    setRegistryStatus("");
+    setLocalStatus("");
   };
 
   const handleNetworkChange = async (networkName) => {
@@ -655,8 +638,8 @@ export default function App() {
 
           <div className="hero-widget">
             <div className="widget-head">
-              <span>Username Registry</span>
-              <strong>Backend Ready</strong>
+              <span>Local Profile</span>
+              <strong>Privacy Ready</strong>
             </div>
 
             <div className="token-box">
@@ -670,31 +653,31 @@ export default function App() {
             <div className="down">↓</div>
 
             <div className="token-box">
-              <small>Maps to</small>
+              <small>Local identity</small>
               <div>
                 <strong>Wallet Address</strong>
-                <span>Registry</span>
+                <span>Local</span>
               </div>
             </div>
 
             <div className="widget-note">
-              X usernames now save to the local backend registry.
+              X username stays local in your browser. No backend storage needed.
             </div>
           </div>
         </section>
 
         <section className="feature-grid">
-          <Feature title="Backend registry" text="Linked X usernames now map to wallet addresses." />
+          <Feature title="Local identity" text="Linked X username displays locally without storing user data." />
           <Feature title="Cross-testnet bridge" text="Bridge between Arc Testnet, Base Sepolia and Ethereum Sepolia." />
-          <Feature title="Username payments" text="Send by @username or resolve wallet address to verified username." />
+          <Feature title="Wallet payments" text="Send by wallet address while showing your linked X identity locally." />
           <Feature title="Faucet route" text="A clear faucet path helps users claim testnet tokens before testing." />
         </section>
 
         <section className="about">
           <h2>Designed for Circle’s stablecoin ecosystem</h2>
           <p>
-            CircleSwap focuses on USDC-native testnet flows, verified identities,
-            and safer username-based transfers before adding full swap and bridge integrations.
+            CircleSwap focuses on USDC-native testnet flows, local identities,
+            and safer wallet-based transfers before adding full swap and bridge integrations.
           </p>
           <button onClick={() => setEntered(true)}>Start Using CircleSwap</button>
         </section>
@@ -789,7 +772,6 @@ export default function App() {
         liquidityHistory={liquidityHistory}
         perpsHistory={perpsHistory}
         openPerpsPositions={openPerpsPositions}
-        registeredUsers={registeredUsers}
         selectedNetwork={selectedNetwork}
         setActiveTab={setActiveTab}
       />
@@ -858,7 +840,7 @@ export default function App() {
               refreshBalances={refreshBalances}
               balanceStatus={balanceStatus}
               registryStatus={registryStatus}
-              saveUsernameToRegistry={saveUsernameToRegistry}
+              saveUsernameToLocal={saveUsernameToLocal}
               txHistory={txHistory}
               setTxHistory={setTxHistory}
             />
@@ -866,9 +848,9 @@ export default function App() {
         </section>
 
         <aside className="side-panel">
-          <h3>Username Registry</h3>
+          <h3>Local Profile</h3>
           <p>
-            Your backend stores linked X usernames and wallet addresses locally.
+            Your X username is shown locally only. No backend storage is used for testers.
           </p>
 
           <div className="side-card">
@@ -877,27 +859,9 @@ export default function App() {
           </div>
 
           <div className="side-card">
-            <span>Registry Status</span>
-            <strong>{registryStatus || "Waiting"}</strong>
+            <span>Local Status</span>
+            <strong>{registryStatus || "Local only"}</strong>
           </div>
-
-          <button className="secondary" onClick={loadRegisteredUsers}>
-            {usersLoading ? "Refreshing..." : "Refresh Registered Users"}
-          </button>
-
-          {registeredUsers.length > 0 && (
-            <div className="side-card">
-              <span>Registered Users</span>
-              <strong>{registeredUsers.length}</strong>
-            </div>
-          )}
-
-          {registeredUsers.map((registeredUser, index) => (
-            <div className="side-card" key={index}>
-              <span>{registeredUser.username}</span>
-              <strong className="break-text">{registeredUser.wallet}</strong>
-            </div>
-          ))}
 
           <button className="secondary" onClick={openCircleFaucet}>
             Claim Faucet from Circle
@@ -920,7 +884,6 @@ function ActivitySummary({
   liquidityHistory,
   perpsHistory,
   openPerpsPositions,
-  registeredUsers,
   selectedNetwork,
   setActiveTab,
 }) {
@@ -1016,7 +979,7 @@ function ActivitySummary({
 
           <div className="quote-box">
             <span>System Status</span>
-            <strong>Registry online • Faucet linked • Live perps pricing enabled</strong>
+            <strong>Local online • Faucet linked • Live perps pricing enabled</strong>
           </div>
 
           <div style={{ display: "flex", gap: "10px", flexWrap: "wrap", marginTop: "14px" }}>
@@ -1041,8 +1004,8 @@ function ActivitySummary({
         <p>Latest local demo actions from this browser.</p>
 
         <div className="side-card">
-          <span>Registered Users</span>
-          <strong>{registeredUsers.length}</strong>
+          <span>Identity Mode</span>
+          <strong>Local only</strong>
         </div>
 
         {recentActivities.length === 0 ? (
@@ -1082,7 +1045,7 @@ function Wallet({
   refreshBalances,
   balanceStatus,
   registryStatus,
-  saveUsernameToRegistry,
+  saveUsernameToLocal,
   txHistory,
   setTxHistory,
 }) {
@@ -1115,7 +1078,7 @@ function Wallet({
     try {
       setLinkMessage("Opening X linking...");
       await linkTwitter();
-      setLinkMessage("X account linked. Save your username to the registry after it appears.");
+      setLinkMessage("X account linked. Your username is now available locally in your profile.");
     } catch (error) {
       console.error("X link failed:", error);
       setLinkMessage(error?.message || "Could not link X account.");
@@ -1128,38 +1091,24 @@ function Wallet({
     setTxHash("");
     setTxStatus("");
 
-    if (!hasTwitter) {
-      setLookupMessage("Link your X account to generate your username first.");
-      return;
-    }
-
     if (!recipientInput.trim()) {
-      setLookupMessage("Enter a receiver username or wallet address.");
+      setLookupMessage("Enter a receiver wallet address.");
       return;
     }
 
-    setLookupMessage("Searching backend registry...");
-
-    const result = await resolveUser(recipientInput);
-
-    if (!result.success) {
-      if (isWalletAddress(recipientInput)) {
-        setLookupMessage("Account not found. This wallet has not linked an X username.");
-      } else {
-        setLookupMessage("Username not found in backend registry.");
-      }
+    if (!isWalletAddress(recipientInput)) {
+      setLookupMessage("Enter a valid 0x wallet address. Username lookup is disabled for privacy.");
       return;
     }
 
     const foundUser = {
-      username: result.user.username,
-      name: result.user.username,
-      wallet: result.user.wallet,
+      username: "Wallet Receiver",
+      name: "Wallet Receiver",
+      wallet: cleanAddress(recipientInput),
     };
 
     setReceiverProfile(foundUser);
-    setRecipientInput(foundUser.username);
-    setLookupMessage("Receiver verified from backend registry.");
+    setLookupMessage("Receiver wallet address verified locally.");
   };
 
   const sendNativeTestnetToken = async (signer) => {
@@ -1198,11 +1147,6 @@ function Wallet({
   const sendTestnetToken = async () => {
     setTxStatus("");
     setTxHash("");
-
-    if (!hasTwitter) {
-      setTxStatus("Link your X account to generate your username first.");
-      return;
-    }
 
     if (!receiverProfile) {
       setTxStatus("Preview and verify the receiver first.");
@@ -1279,7 +1223,7 @@ function Wallet({
     }
   };
 
-  const canConfirmSend = hasTwitter && receiverProfile && amount;
+  const canConfirmSend = receiverProfile && amount;
 
   if (!authenticated) {
     return (
@@ -1287,7 +1231,7 @@ function Wallet({
         <div className="wallet-card main-login">
           <h2>Connect Account</h2>
           <p className="soft">
-            Choose wallet, email or X login. Sending requires X username identity.
+            Choose wallet, email or X login. X username is local identity; sending uses wallet address.
           </p>
 
           <button className="primary" onClick={login} disabled={!ready}>
@@ -1339,14 +1283,14 @@ function Wallet({
             Link X to Generate Username
           </button>
         ) : (
-          <button className="secondary" onClick={saveUsernameToRegistry}>
-            Save Username to Registry
+          <button className="secondary" onClick={saveUsernameToLocal}>
+            Save Username to Local
           </button>
         )}
 
         {registryStatus && (
           <div className="quote-box">
-            <span>Registry Status</span>
+            <span>Local Status</span>
             <strong>{registryStatus}</strong>
           </div>
         )}
@@ -1405,12 +1349,12 @@ function Wallet({
       <div className="wallet-card send-card">
         <h2>Send Testnet Token</h2>
         <p className="soft">
-          This checks your backend registry. Receivers must save their X username first.
+          For privacy, sending now uses wallet address directly. X username remains local profile identity only.
         </p>
 
-        <label>Receiver Username or Wallet</label>
+        <label>Receiver Wallet Address</label>
         <input
-          placeholder="@username or 0x wallet address"
+          placeholder="0x wallet address"
           value={recipientInput}
           onChange={(e) => {
             setRecipientInput(e.target.value);
@@ -1441,7 +1385,7 @@ function Wallet({
         />
 
         <button className="secondary" onClick={previewReceiver}>
-          Preview Receiver
+          Preview Wallet Address
         </button>
 
         {lookupMessage && (
@@ -1458,7 +1402,7 @@ function Wallet({
             </div>
             <div>
               <h3>{receiverProfile.username}</h3>
-              <p>Verified Registry User</p>
+              <p>Wallet Address Ready</p>
               <small>{receiverProfile.wallet}</small>
             </div>
           </div>
