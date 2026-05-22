@@ -1,20 +1,35 @@
 const API_URL =
-  import.meta.env.VITE_API_URL?.replace(/\/$/, "") || "http://localhost:3001";
+  import.meta.env.VITE_API_URL?.replace(/\/$/, "") ||
+  "https://circleswap-dapp-backend.onrender.com";
+
+console.log("CircleSwap API URL:", API_URL);
 
 async function apiRequest(path, options = {}) {
   try {
     const response = await fetch(`${API_URL}${path}`, {
       ...options,
+      mode: "cors",
       headers: {
         "Content-Type": "application/json",
+        Accept: "application/json",
         ...(options.headers || {}),
       },
     });
 
-    const data = await response.json().catch(() => ({
-      success: false,
-      error: "Invalid backend response",
-    }));
+    const text = await response.text();
+
+    let data;
+
+    try {
+      data = JSON.parse(text);
+    } catch (error) {
+      console.error("Invalid backend response text:", text);
+
+      return {
+        success: false,
+        error: "Invalid backend response",
+      };
+    }
 
     if (!response.ok) {
       return {
@@ -30,7 +45,7 @@ async function apiRequest(path, options = {}) {
     return {
       success: false,
       error:
-        "Could not connect to backend. Confirm the backend is running and VITE_API_URL is correct.",
+        "Could not connect to backend. Confirm backend URL, CORS, and Vercel deployment.",
     };
   }
 }

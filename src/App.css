@@ -1267,3 +1267,446 @@ select {
     margin-left: 0;
   }
 }
+
+
+/* Mobile & Tablet Responsiveness Upgrade */
+html,
+body {
+  max-width: 100%;
+}
+
+img,
+svg,
+iframe {
+  max-width: 100%;
+}
+
+button,
+input,
+select {
+  font-family: inherit;
+}
+
+@media (max-width: 1200px) {
+  .workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .side-panel {
+    width: 100%;
+  }
+
+  .card {
+    max-width: 100%;
+  }
+
+  .summary {
+    max-width: 100%;
+  }
+}
+
+@media (max-width: 900px) {
+  .site,
+  .app {
+    padding: 14px;
+  }
+
+  .nav {
+    position: relative;
+    top: 0;
+    padding: 14px;
+    border-radius: 18px;
+    gap: 14px;
+  }
+
+  .brand {
+    width: 100%;
+  }
+
+  .brand-logo {
+    width: 38px;
+    height: 38px;
+    font-size: 20px;
+    border-radius: 12px;
+  }
+
+  .brand h2 {
+    font-size: 18px;
+  }
+
+  .brand span {
+    font-size: 12px;
+  }
+
+  .nav-links,
+  .tabs,
+  .right-actions {
+    width: 100%;
+    overflow-x: auto;
+    padding-bottom: 4px;
+    scrollbar-width: thin;
+  }
+
+  .nav-links span,
+  .tabs button,
+  .right-actions button {
+    white-space: nowrap;
+    flex: 0 0 auto;
+  }
+
+  .hero {
+    margin: 34px auto 36px;
+    gap: 24px;
+  }
+
+  .hero h1 {
+    font-size: 38px;
+    line-height: 1.08;
+  }
+
+  .hero p {
+    font-size: 16px;
+    line-height: 1.65;
+  }
+
+  .actions {
+    flex-direction: column;
+  }
+
+  .actions button {
+    width: 100%;
+  }
+
+  .trust span {
+    font-size: 12px;
+  }
+
+  .hero-widget,
+  .feature,
+  .about,
+  .trade-panel,
+  .side-panel,
+  .card,
+  .market,
+  .mini,
+  .wallet-card,
+  .perps-chart-panel,
+  .perps-orderbook,
+  .perps-trade-ticket,
+  .perps-position-panel,
+  .perps-wide-card {
+    border-radius: 18px;
+  }
+
+  .feature-grid {
+    gap: 14px;
+    margin-bottom: 34px;
+  }
+
+  .feature {
+    padding: 18px;
+  }
+
+  .about {
+    padding: 28px 18px;
+  }
+
+  .about h2 {
+    font-size: 28px;
+  }
+
+  .app-head {
+    margin: 24px auto 16px;
+    gap: 14px;
+  }
+
+  .app-head h1 {
+    font-size: 28px;
+  }
+
+  .summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .mini {
+    min-height: 64px;
+    padding: 10px;
+  }
+
+  .mini strong {
+    font-size: 16px;
+  }
+
+  .workspace {
+    gap: 16px;
+  }
+
+  .trade-panel,
+  .side-panel,
+  .wallet-card,
+  .card {
+    padding: 18px;
+  }
+
+  .field {
+    flex-direction: column;
+  }
+
+  .field select {
+    width: 100%;
+  }
+
+  .wallet-flow {
+    grid-template-columns: 1fr;
+    gap: 16px;
+  }
+
+  .profile-preview {
+    align-items: flex-start;
+  }
+
+  .avatar {
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    font-size: 20px;
+  }
+
+  .quote-box,
+  .status-box,
+  .receive-box,
+  .side-card {
+    padding: 13px;
+  }
+
+  .quote-box {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .quote-box strong,
+  .status-box strong,
+  .receive-box strong,
+  .side-card strong {
+    text-align: left;
+    max-width: 100%;
+    word-break: break-word;
+  }
+
+  .break-text {
+    text-align: left;
+    max-width: 100%;
+  }
+}
+
+@media (max-width: 650px) {
+  .site,
+  .app {
+    padding: 10px;
+  }
+
+  .nav {
+    padding: 12px;
+  }
+
+  .nav button,
+  .actions button,
+  .primary,
+  .secondary,
+  .x-btn {
+    padding: 12px 14px;
+    font-size: 14px;
+  }
+
+  .pill {
+    font-size: 12px;
+    padding: 8px 11px;
+  }
+
+  .hero h1 {
+    font-size: 32px;
+  }
+
+  .hero p {
+    font-size: 15px;
+  }
+
+  .token-box {
+    padding: 14px;
+  }
+
+  .token-box strong {
+    font-size: 22px;
+  }
+
+  .app-head h1 {
+    font-size: 24px;
+  }
+
+  .app-head p {
+    font-size: 14px;
+  }
+
+  .summary {
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+
+  .mini {
+    min-height: 58px;
+    border-radius: 14px;
+  }
+
+  .mini span {
+    font-size: 10px;
+  }
+
+  .mini strong {
+    font-size: 15px;
+  }
+
+  .trade-panel,
+  .side-panel,
+  .wallet-card,
+  .card {
+    padding: 14px;
+  }
+
+  input,
+  select {
+    padding: 13px;
+    font-size: 14px;
+  }
+
+  label {
+    font-size: 13px;
+  }
+
+  .markets {
+    gap: 12px;
+  }
+
+  .market {
+    padding: 15px;
+  }
+
+  .market div {
+    flex-direction: column;
+  }
+
+  .gas-menu,
+  .account-dropdown {
+    position: static;
+    width: 100%;
+    margin-top: 10px;
+  }
+
+  .perps-topbar {
+    padding: 14px;
+  }
+
+  .perps-topbar h2 {
+    font-size: 24px;
+  }
+
+  .perps-top-actions {
+    min-width: 100%;
+  }
+
+  .perps-market-card {
+    min-height: auto;
+  }
+
+  .perps-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .perps-chart-panel,
+  .perps-orderbook,
+  .perps-trade-ticket {
+    min-height: auto;
+  }
+
+  .perps-panel-head {
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .tradingview-chart-shell {
+    height: 360px;
+    border-radius: 16px;
+  }
+
+  .perps-chart-toolbar {
+    border-radius: 14px;
+    gap: 6px;
+    padding: 8px;
+  }
+
+  .perps-chart-toolbar button {
+    min-width: auto;
+    padding: 7px 9px;
+    font-size: 12px;
+  }
+
+  .perps-chart-toolbar strong {
+    font-size: 11px;
+    line-height: 1.4;
+  }
+
+  .book-table div,
+  .recent-trades div {
+    font-size: 12px;
+  }
+
+  .book-mid {
+    font-size: 18px;
+  }
+
+  .side-toggle {
+    gap: 8px;
+  }
+
+  .perps-wide-card {
+    align-items: flex-start;
+  }
+
+  .position-row {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+}
+
+@media (max-width: 420px) {
+  .summary {
+    grid-template-columns: 1fr;
+  }
+
+  .hero h1 {
+    font-size: 28px;
+  }
+
+  .brand h2 {
+    font-size: 16px;
+  }
+
+  .brand span {
+    display: none;
+  }
+
+  .nav-links,
+  .tabs,
+  .right-actions {
+    gap: 8px;
+  }
+
+  .tabs button {
+    padding: 10px 12px;
+    font-size: 13px;
+  }
+
+  .tradingview-chart-shell {
+    height: 320px;
+  }
+}
