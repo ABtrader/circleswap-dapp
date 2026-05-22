@@ -17,7 +17,7 @@ import {
 } from "./constants";
 import "./App.css";
 
-const tabs = ["swap", "bridge", "liquidity", "perps", "genesis", "wallet"];
+const tabs = ["swap", "bridge", "liquidity", "perps", "wallet"];
 const CIRCLE_FAUCET_URL = "https://faucet.circle.com/";
 
 const GENESIS_PASS_CONTRACT = "0x36148Bc3Dc2C31ab2E9f066979B604459F07EA38";
@@ -624,7 +624,6 @@ export default function App() {
             <span>Bridge</span>
             <span>Liquidity</span>
             <span>Perps</span>
-            <span>Genesis</span>
           </div>
           <button onClick={() => setEntered(true)}>Enter App</button>
         </nav>
@@ -759,6 +758,14 @@ export default function App() {
                     }}
                   >
                     Profile
+                  </button>
+                  <button
+                    onClick={() => {
+                      setActiveTab("genesis");
+                      setAccountOpen(false);
+                    }}
+                  >
+                    Genesis Mint
                   </button>
                   <button onClick={handleLogout}>Logout</button>
                 </div>
@@ -1025,9 +1032,7 @@ function ActivitySummary({
             <button className="secondary" onClick={() => setActiveTab("perps")}>
               Go to Perps
             </button>
-            <button className="secondary" onClick={() => setActiveTab("genesis")}>
-              Go to Genesis Pass
-            </button>
+
           </div>
         </Card>
       </section>
