@@ -17,8 +17,24 @@ import {
 } from "./constants";
 import "./App.css";
 
-const tabs = ["swap", "bridge", "liquidity", "perps", "wallet"];
+const tabs = ["swap", "bridge", "liquidity", "perps", "genesis", "wallet"];
 const CIRCLE_FAUCET_URL = "https://faucet.circle.com/";
+
+const GENESIS_PASS_CONTRACT = "0x36148Bc3Dc2C31ab2E9f066979B604459F07EA38";
+const ARC_USDC_ADDRESS = "0x3600000000000000000000000000000000000000";
+const GENESIS_MINT_PRICE = "5";
+
+const GENESIS_PASS_ABI = [
+  "function mintGenesisPass() external",
+  "function hasMinted(address user) view returns (bool)",
+  "function totalMinted() view returns (uint256)",
+  "function MAX_SUPPLY() view returns (uint256)",
+];
+
+const ERC20_APPROVAL_ABI = [
+  "function approve(address spender, uint256 amount) returns (bool)",
+  "function allowance(address owner, address spender) view returns (uint256)",
+];
 
 const ERC20_ABI = [
   "function balanceOf(address owner) view returns (uint256)",
@@ -608,6 +624,7 @@ export default function App() {
             <span>Bridge</span>
             <span>Liquidity</span>
             <span>Perps</span>
+            <span>Genesis</span>
           </div>
           <button onClick={() => setEntered(true)}>Enter App</button>
         </nav>
@@ -821,6 +838,19 @@ export default function App() {
               walletAddress={walletAddress}
             />
           )}
+          {activeTab === "genesis" && (
+            <GenesisPass
+              selectedNetwork={selectedNetwork}
+              activeWallet={activeWallet}
+              walletAddress={walletAddress}
+              txHistory={txHistory}
+              swapHistory={swapHistory}
+              bridgeHistory={bridgeHistory}
+              liquidityHistory={liquidityHistory}
+              perpsHistory={perpsHistory}
+              openPerpsPositions={openPerpsPositions}
+            />
+          )}
           {activeTab === "wallet" && (
             <Wallet
               selectedNetwork={selectedNetwork}
@@ -995,6 +1025,9 @@ function ActivitySummary({
             <button className="secondary" onClick={() => setActiveTab("perps")}>
               Go to Perps
             </button>
+            <button className="secondary" onClick={() => setActiveTab("genesis")}>
+              Go to Genesis Pass
+            </button>
           </div>
         </Card>
       </section>
@@ -1024,6 +1057,247 @@ function ActivitySummary({
         )}
       </aside>
     </section>
+  );
+}
+
+
+function GenesisPass({
+  selectedNetwork,
+  activeWallet,
+  walletAddress,
+  txHistory,
+  swapHistory,
+  bridgeHistory,
+  liquidityHistory,
+  perpsHistory,
+  openPerpsPositions,
+}) {
+  const [mintStatus, setMintStatus] = useState("");
+  const [mintTxHash, setMintTxHash] = useState("");
+  const [totalMinted, setTotalMinted] = useState("0");
+  const [maxSupply, setMaxSupply] = useState("20000");
+  const [hasMintedGenesis, setHasMintedGenesis] = useState(false);
+  const [checkingMint, setCheckingMint] = useState(false);
+
+  const selectedNetworkInfo = getNetworkByName(selectedNetwork);
+  const genesisExplorerTxUrl =
+    selectedNetworkInfo && mintTxHash ? `${selectedNetworkInfo.explorer}/tx/${mintTxHash}` : "";
+
+  const completedSwap = swapHistory.length > 0;
+  const completedBridge = bridgeHistory.length > 0;
+  const completedLiquidity = liquidityHistory.length > 0;
+  const completedPerps = perpsHistory.length > 0 || openPerpsPositions.length > 0;
+
+  const totalTesterActions =
+    txHistory.length +
+    swapHistory.length +
+    bridgeHistory.length +
+    liquidityHistory.length +
+    perpsHistory.length +
+    openPerpsPositions.length;
+
+  const hasEnoughActions = totalTesterActions >= 25;
+  const completedAllModules =
+    completedSwap && completedBridge && completedLiquidity && completedPerps;
+
+  const isEligible = completedAllModules && hasEnoughActions;
+
+  const refreshGenesisStatus = async () => {
+    if (!activeWallet || !walletAddress) {
+      setMintStatus("Connect your wallet to check Genesis Pass mint status.");
+      return;
+    }
+
+    try {
+      setCheckingMint(true);
+      setMintStatus("Checking Genesis Pass contract...");
+
+      await switchWalletNetwork(NETWORKS.ARC_TESTNET.name);
+
+      const ethereumProvider = await activeWallet.getEthereumProvider();
+      const provider = new ethers.BrowserProvider(ethereumProvider);
+      const contract = new ethers.Contract(
+        GENESIS_PASS_CONTRACT,
+        GENESIS_PASS_ABI,
+        provider
+      );
+
+      const minted = await contract.hasMinted(walletAddress);
+      const mintedCount = await contract.totalMinted();
+      const supplyCap = await contract.MAX_SUPPLY();
+
+      setHasMintedGenesis(Boolean(minted));
+      setTotalMinted(mintedCount.toString());
+      setMaxSupply(supplyCap.toString());
+      setMintStatus("Genesis Pass status updated.");
+    } catch (error) {
+      console.error("Genesis status check failed:", error);
+      setMintStatus(error?.shortMessage || error?.message || "Could not check Genesis Pass status.");
+    } finally {
+      setCheckingMint(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeWallet && walletAddress) {
+      refreshGenesisStatus();
+    }
+  }, [activeWallet, walletAddress]);
+
+  const mintGenesisPass = async () => {
+    setMintTxHash("");
+
+    if (!activeWallet || !walletAddress) {
+      setMintStatus("Connect your wallet first.");
+      return;
+    }
+
+    if (!isEligible) {
+      setMintStatus("Mint locked. Complete all modules and reach 25 total testnet actions first.");
+      return;
+    }
+
+    if (hasMintedGenesis) {
+      setMintStatus("This wallet has already minted the Genesis Pass.");
+      return;
+    }
+
+    try {
+      setMintStatus("Switching wallet to Arc Testnet...");
+      await switchWalletNetwork(NETWORKS.ARC_TESTNET.name);
+
+      const ethereumProvider = await activeWallet.getEthereumProvider();
+      const provider = new ethers.BrowserProvider(ethereumProvider);
+      const signer = await provider.getSigner();
+
+      const usdc = new ethers.Contract(
+        ARC_USDC_ADDRESS,
+        ERC20_APPROVAL_ABI,
+        signer
+      );
+
+      const genesisPass = new ethers.Contract(
+        GENESIS_PASS_CONTRACT,
+        GENESIS_PASS_ABI,
+        signer
+      );
+
+      const mintPriceRaw = ethers.parseUnits(GENESIS_MINT_PRICE, 6);
+
+      setMintStatus(`Approving ${GENESIS_MINT_PRICE} Arc USDC for Genesis Pass mint...`);
+
+      const currentAllowance = await usdc.allowance(walletAddress, GENESIS_PASS_CONTRACT);
+
+      if (currentAllowance < mintPriceRaw) {
+        const approveTx = await usdc.approve(GENESIS_PASS_CONTRACT, mintPriceRaw);
+        setMintStatus("USDC approval submitted. Waiting for confirmation...");
+        await approveTx.wait();
+      }
+
+      setMintStatus("Opening wallet to mint CircleSwap Genesis Pass...");
+
+      const mintTx = await genesisPass.mintGenesisPass();
+
+      setMintTxHash(mintTx.hash);
+      setMintStatus("Genesis Pass mint submitted. Waiting for confirmation...");
+
+      await mintTx.wait();
+
+      localStorage.setItem("circleswap_genesis_pass_minted", "true");
+      setHasMintedGenesis(true);
+      setMintStatus("CircleSwap Genesis Pass minted successfully.");
+      await refreshGenesisStatus();
+    } catch (error) {
+      console.error("Genesis Pass mint failed:", error);
+      setMintStatus(error?.shortMessage || error?.message || "Genesis Pass mint failed.");
+    }
+  };
+
+  return (
+    <Card title="CircleSwap Genesis Pass">
+      <p className="soft swap-note">
+        The Genesis Pass is an early tester NFT for users who explore the full CircleSwap testnet terminal.
+        Mint is capped at 20,000 and uses Arc USDC.
+      </p>
+
+      <div className="quote-box">
+        <span>Contract</span>
+        <strong className="break-text">{GENESIS_PASS_CONTRACT}</strong>
+      </div>
+
+      <div className="quote-box">
+        <span>Mint Price</span>
+        <strong>{GENESIS_MINT_PRICE} Arc USDC</strong>
+      </div>
+
+      <div className="quote-box">
+        <span>Supply</span>
+        <strong>{totalMinted} / {maxSupply}</strong>
+      </div>
+
+      <div className="quote-box">
+        <span>Wallet Mint Status</span>
+        <strong>{hasMintedGenesis ? "Minted" : "Not minted"}</strong>
+      </div>
+
+      <div className="quote-box">
+        <span>Swap Completed</span>
+        <strong>{completedSwap ? "✅ Done" : "❌ Pending"}</strong>
+      </div>
+
+      <div className="quote-box">
+        <span>Bridge Completed</span>
+        <strong>{completedBridge ? "✅ Done" : "❌ Pending"}</strong>
+      </div>
+
+      <div className="quote-box">
+        <span>Liquidity Completed</span>
+        <strong>{completedLiquidity ? "✅ Done" : "❌ Pending"}</strong>
+      </div>
+
+      <div className="quote-box">
+        <span>Perps Completed</span>
+        <strong>{completedPerps ? "✅ Done" : "❌ Pending"}</strong>
+      </div>
+
+      <div className="quote-box">
+        <span>Total Tester Actions</span>
+        <strong>{totalTesterActions} / 25</strong>
+      </div>
+
+      <div className="quote-box">
+        <span>Mint Status</span>
+        <strong>{isEligible ? "Unlocked" : "Locked"}</strong>
+      </div>
+
+      {mintStatus && (
+        <div className="quote-box">
+          <span>Genesis Status</span>
+          <strong>{mintStatus}</strong>
+        </div>
+      )}
+
+      {mintTxHash && (
+        <div className="quote-box">
+          <span>Mint Tx Hash</span>
+          <strong className="break-text">{mintTxHash}</strong>
+        </div>
+      )}
+
+      {genesisExplorerTxUrl && (
+        <a className="secondary" href={genesisExplorerTxUrl} target="_blank" rel="noreferrer">
+          View Mint Tx on Explorer
+        </a>
+      )}
+
+      <button className="secondary" onClick={refreshGenesisStatus} disabled={checkingMint}>
+        {checkingMint ? "Checking..." : "Refresh Genesis Status"}
+      </button>
+
+      <button className="primary" onClick={mintGenesisPass} disabled={!isEligible || hasMintedGenesis}>
+        {hasMintedGenesis ? "Genesis Pass Minted" : isEligible ? "Mint Genesis Pass" : "Complete Tasks to Unlock Mint"}
+      </button>
+    </Card>
   );
 }
 
